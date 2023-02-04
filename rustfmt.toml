@@ -1,0 +1,10 @@
+newline_style = "Unix"
+chain_width = 90
+fn_call_width = 90
+single_line_if_else_max_width = 60
+
+unstable_features = true
+condense_wildcard_suffixes = true
+group_imports = "StdExternalCrate"
+imports_granularity = "Module"
+reorder_impl_items = true
