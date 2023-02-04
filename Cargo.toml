@@ -1,6 +1,11 @@
-[package]
-name = "slsh"
-version = "0.0.0"
-edition = "2021"
+[workspace]
+members = [
+    "src",
+]
 
-[dependencies]
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+debug = true
+overflow-checks = true
