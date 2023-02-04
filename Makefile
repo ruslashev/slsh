@@ -11,7 +11,9 @@ BUILT_SHADERS = $(SHADERS:shaders/%=$(COMP_SHADERS_DIR)/%.spv)
 
 ifeq ($(MODE), release)
     CFLAGS = --release
-else ifneq ($(MODE), debug)
+else ifeq ($(MODE), debug)
+    BFLAGS = mold -run
+else
     $(error Unknown build mode "$(MODE)")
 endif
 
@@ -20,8 +22,10 @@ GLSLC_FLAGS = -O
 run: $(BIN)
 	@$(BIN)
 
+all: $(BIN)
+
 $(BIN): $(BUILT_SHADERS)
-	cargo build $(CFLAGS)
+	$(BFLAGS) cargo build $(CFLAGS)
 
 $(COMP_SHADERS_DIR)/%.spv: shaders/%
 	@mkdir -p $(@D)
@@ -31,6 +35,6 @@ clean:
 	cargo clean
 
 .NOTPARALLEL:
-.PHONY: run clean
+.PHONY: run all clean
 
 -include $(DEP)
