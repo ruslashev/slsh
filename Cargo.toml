@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "slsh_engine",
     "src",
 ]
 

@@ -1,0 +1,11 @@
+[package]
+name = "slsh_engine"
+version = "0.0.0"
+edition = "2021"
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+ash = { version = "0.37.2", features = ["linked"] }
+glfw = { version = "0.50.0", features = ["vulkan"] }

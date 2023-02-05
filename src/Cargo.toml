@@ -6,3 +6,6 @@ edition = "2021"
 [[bin]]
 name = "slsh"
 path = "main.rs"
+
+[dependencies]
+slsh_engine = { path = "../slsh_engine" }
