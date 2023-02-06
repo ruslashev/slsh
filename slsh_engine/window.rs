@@ -18,6 +18,17 @@ pub enum Resolution {
     FullscreenWithRes(u32, u32),
 }
 
+pub enum Event {
+    KeyPress(Key),
+    KeyRelease(Key),
+}
+
+#[repr(i32)]
+pub enum Key {
+    Escape = glfw::Key::Escape as i32,
+    Unknown = glfw::Key::Unknown as i32,
+}
+
 impl Window {
     pub fn new(res: &Resolution, title: &str) -> Self {
         let mut glfw = glfw::init(glfw::FAIL_ON_ERRORS).expect("Failed to initialize GLFW");
@@ -108,5 +119,33 @@ impl Window {
 
     pub fn should_close(&self) -> bool {
         self.handle.should_close()
+    }
+
+    pub fn poll_events(&mut self, mut handle_cb: impl FnMut(Event)) {
+        self.glfw.poll_events();
+        for (_, glfw_event) in glfw::flush_messages(&self.events) {
+            match glfw_event {
+                glfw::WindowEvent::Key(key, _scancode, action, _modifiers) => {
+                    if action == glfw::Action::Press {
+                        let event = Event::KeyPress(Key::from_glfw(key));
+                        handle_cb(event);
+                    }
+                    if action == glfw::Action::Release {
+                        let event = Event::KeyRelease(Key::from_glfw(key));
+                        handle_cb(event);
+                    }
+                }
+                _ => (),
+            }
+        }
+    }
+}
+
+impl Key {
+    fn from_glfw(key: glfw::Key) -> Self {
+        match key {
+            glfw::Key::Escape => Key::Escape,
+            _ => Key::Unknown,
+        }
     }
 }

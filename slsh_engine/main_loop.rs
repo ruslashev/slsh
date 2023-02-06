@@ -1,9 +1,10 @@
 use crate::renderer::Renderer;
-use crate::window::{Resolution, Window};
+use crate::window::{Event, Key, Resolution, Window};
 
 pub struct MainLoop {
     window: Window,
     renderer: Renderer,
+    running: bool,
 }
 
 impl MainLoop {
@@ -11,7 +12,11 @@ impl MainLoop {
         let window = Window::new(&res, app_name);
         let renderer = unsafe { Renderer::new(app_name, &window) };
 
-        Self { window, renderer }
+        Self {
+            window,
+            renderer,
+            running: true,
+        }
     }
 
     pub fn run(&mut self) {
@@ -21,10 +26,7 @@ impl MainLoop {
         let mut current_time = self.window.current_time_ms();
         let mut minimized = false;
 
-        let title_update_delay = 0.03;
-        let mut next_title_update_time = 0.0;
-
-        'main_loop: while !self.window.should_close() {
+        while self.running {
             if minimized {
                 self.window.block_until_event();
             }
@@ -36,42 +38,16 @@ impl MainLoop {
                 // update(dt, current_time);
             }
 
-            // for event in self.window.poll_events() {
-            //     match event {
-            //         Event::KeyPress(Key::Escape) => break 'main_loop,
-            //         Event::WindowResize(width, height) => {
-            //             if width == 0 || height == 0 {
-            //                 minimized = true;
-            //                 continue 'main_loop;
-            //             }
+            self.window.poll_events(|event| match event {
+                Event::KeyPress(Key::Escape) => self.running = false,
+                _ => (),
+            });
 
-            //             minimized = false;
-
-            //             self.renderer.handle_resize(width, height);
-            //         }
-            //         _ => (),
-            //     }
-            // }
-
-            let draw_start = self.window.current_time_ms();
+            if self.window.should_close() {
+                break;
+            }
 
             // self.renderer.present();
-
-            let frame_end = self.window.current_time_ms();
-
-            if frame_end > next_title_update_time {
-                next_title_update_time = frame_end + title_update_delay;
-
-                let draw_time = frame_end - draw_start;
-                let frame_time = frame_end - real_time;
-
-                let draw_ms = draw_time * 1000.0;
-                let fps = 1.0 / frame_time;
-
-                let title = &format!("slsh | draw = {:05.2} ms, FPS = {:04.0}", draw_ms, fps);
-
-                self.window.set_title(title);
-            }
         }
     }
 }
