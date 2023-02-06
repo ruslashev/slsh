@@ -8,6 +8,8 @@ pub struct Window {
     glfw: glfw::Glfw,
     handle: glfw::Window,
     events: Receiver<(f64, glfw::WindowEvent)>,
+    width: u32,
+    height: u32,
 }
 
 pub enum Resolution {
@@ -23,28 +25,38 @@ impl Window {
         glfw.window_hint(glfw::WindowHint::Visible(true));
         glfw.window_hint(glfw::WindowHint::ClientApi(glfw::ClientApiHint::NoApi));
 
-        let (handle, events) = match *res {
+        let (width, height, create_result) = match *res {
             Resolution::Windowed(width, height) => {
-                glfw.create_window(width, height, title, glfw::WindowMode::Windowed)
+                let res = glfw.create_window(width, height, title, glfw::WindowMode::Windowed);
+
+                (width, height, res)
             }
             Resolution::Fullscreen => glfw.with_primary_monitor(|glfw, monitor| {
                 let monitor = monitor.expect("No monitors found");
                 let mode = monitor.get_video_mode().expect("Failed to get video mode");
-                glfw.create_window(
-                    mode.width,
-                    mode.height,
-                    title,
-                    glfw::WindowMode::FullScreen(monitor),
-                )
+                let width = mode.width;
+                let height = mode.height;
+                let res =
+                    glfw.create_window(width, height, title, glfw::WindowMode::FullScreen(monitor));
+
+                (width, height, res)
             }),
             Resolution::FullscreenWithRes(width, height) => {
                 glfw.with_primary_monitor(|glfw, monitor| {
                     let monitor = monitor.expect("No monitors found");
-                    glfw.create_window(width, height, title, glfw::WindowMode::FullScreen(monitor))
+                    let res = glfw.create_window(
+                        width,
+                        height,
+                        title,
+                        glfw::WindowMode::FullScreen(monitor),
+                    );
+
+                    (width, height, res)
                 })
             }
-        }
-        .expect("Failed to create GLFW window");
+        };
+
+        let (handle, events) = create_result.expect("Failed to create GLFW window");
 
         assert!(glfw.vulkan_supported(), "Vulkan not supported");
 
@@ -52,6 +64,8 @@ impl Window {
             glfw,
             handle,
             events,
+            width,
+            height,
         }
     }
 
@@ -68,5 +82,13 @@ impl Window {
             .expect("Failed to create window surface");
 
         unsafe { surface.assume_init() }
+    }
+
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    pub fn height(&self) -> u32 {
+        self.height
     }
 }
