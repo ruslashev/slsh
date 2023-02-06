@@ -8,6 +8,7 @@ use ash::vk;
 
 use crate::window::Window;
 
+const REQ_DEVICE_EXTENSIONS: &[&str] = &["VK_KHR_swapchain"];
 const REQ_VALIDATION_LAYERS: &[&str] = &["VK_LAYER_KHRONOS_validation"];
 const API_VER_MAJOR: u32 = 1;
 const API_VER_MINOR: u32 = 0;
@@ -39,13 +40,10 @@ struct Vertex {
 
 impl Renderer {
     pub unsafe fn new(app_name: &'static str, window: &Window) -> Self {
-        let req_exts_owned = window.get_required_extensions();
-        let req_exts_cstrs = convert_to_c_strs(&req_exts_owned);
-
         let entry = ash::Entry::linked();
-        let instance = create_instance(app_name, &req_exts_cstrs, &entry);
+        let instance = create_instance(app_name, &entry, window);
         let surface = window.create_surface(&instance);
-        let phys_device = pick_phys_device(&entry, &instance, surface, &req_exts_cstrs);
+        let phys_device = pick_phys_device(&entry, &instance, surface);
 
         Self { instance, entry }
     }
@@ -75,11 +73,7 @@ impl<T, E: Display> CheckVkError<T> for Result<T, E> {
     }
 }
 
-fn create_instance(
-    app_name: &'static str,
-    req_exts: &[CString],
-    entry: &ash::Entry,
-) -> ash::Instance {
+fn create_instance(app_name: &'static str, entry: &ash::Entry, window: &Window) -> ash::Instance {
     let app_cstring = CString::new(app_name).check_err("convert app_name to CString");
     let app_cstr = app_cstring.as_c_str();
 
@@ -99,11 +93,13 @@ fn create_instance(
         .engine_version(engine_version)
         .api_version(api_version);
 
-    let req_layers_owned = REQ_VALIDATION_LAYERS.iter().map(|l| l.to_string()).collect::<Vec<_>>();
+    let req_layers_owned = convert_to_strings(REQ_VALIDATION_LAYERS);
     let req_layers_cstrs = convert_to_c_strs(&req_layers_owned);
     let req_layers_cptrs = convert_to_c_ptrs(&req_layers_cstrs);
 
-    let mut req_exts_cptrs = convert_to_c_ptrs(&req_exts);
+    let req_exts_owned = window.get_required_extensions();
+    let req_exts_cstrs = convert_to_c_strs(&req_exts_owned);
+    let mut req_exts_cptrs = convert_to_c_ptrs(&req_exts_cstrs);
 
     // #[cfg(any(target_os = "macos", target_os = "ios"))]
     {
@@ -126,6 +122,10 @@ fn create_instance(
     unsafe { entry.create_instance(&create_info, None) }.check_err("create instance")
 }
 
+fn convert_to_strings(strs: &[&str]) -> Vec<String> {
+    strs.iter().map(|s| s.to_string()).collect()
+}
+
 fn convert_to_c_strs(strings: &[String]) -> Vec<CString> {
     strings
         .iter()
@@ -141,12 +141,11 @@ unsafe fn pick_phys_device(
     entry: &ash::Entry,
     instance: &ash::Instance,
     surface: vk::SurfaceKHR,
-    req_exts: &[CString],
 ) -> PhysDeviceInfo {
     let phys_devices = instance.enumerate_physical_devices().check_err("get physical devices");
     let surface_loader = Surface::new(&entry, &instance);
     let mut phys_device_infos =
-        gather_phys_device_infos(instance, surface, surface_loader, &phys_devices, req_exts);
+        gather_phys_device_infos(instance, surface, surface_loader, &phys_devices);
 
     assert!(!phys_device_infos.is_empty(), "No suitable devices found");
 
@@ -160,18 +159,21 @@ unsafe fn gather_phys_device_infos(
     surface: vk::SurfaceKHR,
     surface_loader: Surface,
     phys_devices: &[vk::PhysicalDevice],
-    req_exts: &[CString],
 ) -> Vec<PhysDeviceInfo> {
     let mut phys_device_infos = Vec::with_capacity(phys_devices.len());
 
+    println!("Physical devices:");
+
     for device_ref in phys_devices {
         let phys_device = *device_ref;
-
         let properties = instance.get_physical_device_properties(phys_device);
         let queue_families = instance.get_physical_device_queue_family_properties(phys_device);
         let extensions = instance
             .enumerate_device_extension_properties(phys_device)
             .check_err("enumerate device extensions");
+
+        let name = CStr::from_ptr(properties.device_name.as_ptr()).to_str().unwrap();
+        println!("\t{}", name);
 
         let mut queue_family = None;
 
@@ -188,7 +190,7 @@ unsafe fn gather_phys_device_infos(
             }
         }
 
-        if !supports_required_extensions(&extensions, req_exts) {
+        if !supports_required_extensions(&extensions) {
             continue;
         }
 
@@ -208,7 +210,10 @@ unsafe fn gather_phys_device_infos(
     phys_device_infos
 }
 
-fn supports_required_extensions(exts: &[vk::ExtensionProperties], req_exts: &[CString]) -> bool {
+fn supports_required_extensions(exts: &[vk::ExtensionProperties]) -> bool {
+    let req_device_exts = convert_to_strings(REQ_DEVICE_EXTENSIONS);
+    let req_exts = convert_to_c_strs(&req_device_exts);
+
     let mut support_found = Vec::with_capacity(req_exts.len());
     support_found.resize(req_exts.len(), false);
 
