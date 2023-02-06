@@ -56,9 +56,11 @@ impl Window {
             }
         };
 
-        let (handle, events) = create_result.expect("Failed to create GLFW window");
+        let (mut handle, events) = create_result.expect("Failed to create GLFW window");
 
         assert!(glfw.vulkan_supported(), "Vulkan not supported");
+
+        handle.set_key_polling(true);
 
         Self {
             glfw,
@@ -84,11 +86,27 @@ impl Window {
         unsafe { surface.assume_init() }
     }
 
+    pub fn current_time_ms(&self) -> f64 {
+        self.glfw.get_time() / 1000.0
+    }
+
+    pub fn block_until_event(&mut self) {
+        self.glfw.wait_events();
+    }
+
+    pub fn set_title(&mut self, title: &str) {
+        self.handle.set_title(title);
+    }
+
     pub fn width(&self) -> u32 {
         self.width
     }
 
     pub fn height(&self) -> u32 {
         self.height
+    }
+
+    pub fn should_close(&self) -> bool {
+        self.handle.should_close()
     }
 }
