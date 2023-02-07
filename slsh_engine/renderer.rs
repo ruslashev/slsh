@@ -8,7 +8,11 @@ use ash::vk;
 
 use crate::window::Window;
 
-const REQ_DEVICE_EXTENSIONS: &[&str] = &["VK_KHR_swapchain"];
+const REQ_DEVICE_EXTENSIONS: &[&str] = &[
+    "VK_KHR_swapchain",
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    "VK_KHR_portability_subset",
+];
 const REQ_VALIDATION_LAYERS: &[&str] = &["VK_LAYER_KHRONOS_validation"];
 const API_VER_MAJOR: u32 = 1;
 const API_VER_MINOR: u32 = 0;
@@ -99,9 +103,11 @@ fn create_instance(app_name: &'static str, entry: &ash::Entry, window: &Window) 
 
     let req_exts_owned = window.get_required_extensions();
     let req_exts_cstrs = convert_to_c_strs(&req_exts_owned);
+
+    #[allow(unused_mut)]
     let mut req_exts_cptrs = convert_to_c_ptrs(&req_exts_cstrs);
 
-    // #[cfg(any(target_os = "macos", target_os = "ios"))]
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     {
         req_exts_cptrs.push(vk::KhrPortabilityEnumerationFn::name().as_ptr());
         req_exts_cptrs.push(vk::KhrGetPhysicalDeviceProperties2Fn::name().as_ptr());
