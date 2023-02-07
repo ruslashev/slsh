@@ -8,8 +8,8 @@ pub struct MainLoop {
 }
 
 impl MainLoop {
-    pub fn new(res: Resolution, app_name: &'static str) -> Self {
-        let window = Window::new(&res, app_name);
+    pub fn new(res: &Resolution, app_name: &'static str) -> Self {
+        let window = Window::new(res, app_name);
         let renderer = unsafe { Renderer::new(app_name, &window) };
 
         Self {

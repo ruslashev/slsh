@@ -56,7 +56,7 @@ impl Renderer {
         let instance = create_instance(app_name, &entry, window);
         let surface = window.create_surface(&instance);
         let surface_loader = Surface::new(&entry, &instance);
-        let phys_device_info = pick_phys_device(&entry, &instance, surface, &surface_loader);
+        let phys_device_info = pick_phys_device(&instance, surface, &surface_loader);
         let phys_device = phys_device_info.phys_device;
 
         let surface_format = surface_loader
@@ -78,7 +78,7 @@ impl Renderer {
             surface,
             &surface_loader,
             &surface_capabilities,
-            &surface_format,
+            surface_format,
             surface_resolution,
             &swapchain_loader,
         );
@@ -181,7 +181,7 @@ fn create_instance(app_name: &'static str, entry: &ash::Entry, window: &Window) 
 }
 
 fn convert_to_strings(strs: &[&str]) -> Vec<String> {
-    strs.iter().map(|s| s.to_string()).collect()
+    strs.iter().map(std::string::ToString::to_string).collect()
 }
 
 fn convert_to_c_strs(strings: &[String]) -> Vec<CString> {
@@ -196,7 +196,6 @@ fn convert_to_c_ptrs(cstrings: &[CString]) -> Vec<*const c_char> {
 }
 
 unsafe fn pick_phys_device(
-    entry: &ash::Entry,
     instance: &ash::Instance,
     surface: vk::SurfaceKHR,
     surface_loader: &Surface,
@@ -236,13 +235,13 @@ unsafe fn gather_phys_device_infos(
         let mut queue_family = None;
 
         for (i, qf) in queue_families.iter().enumerate() {
+            let idx: u32 = i.try_into().unwrap();
             let graphics_support = qf.queue_flags.contains(vk::QueueFlags::GRAPHICS);
             let surface_support = surface_loader
-                .get_physical_device_surface_support(phys_device, i as u32, surface)
+                .get_physical_device_surface_support(phys_device, idx, surface)
                 .check_err("get surface support");
 
             if graphics_support && surface_support {
-                let idx = i.try_into().unwrap();
                 queue_family = Some(idx);
                 break;
             }
@@ -341,7 +340,7 @@ fn create_swapchain(
     surface: vk::SurfaceKHR,
     surface_loader: &Surface,
     surface_capabilities: &vk::SurfaceCapabilitiesKHR,
-    surface_format: &vk::SurfaceFormatKHR,
+    surface_format: vk::SurfaceFormatKHR,
     surface_resolution: vk::Extent2D,
     swapchain_loader: &Swapchain,
 ) -> vk::SwapchainKHR {
@@ -367,7 +366,7 @@ fn create_swapchain(
 
     let present_mode = present_modes
         .iter()
-        .cloned()
+        .copied()
         .find(|&mode| mode == vk::PresentModeKHR::MAILBOX)
         .unwrap_or(vk::PresentModeKHR::FIFO);
 
