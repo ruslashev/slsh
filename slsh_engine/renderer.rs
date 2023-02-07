@@ -33,6 +33,8 @@ pub struct Renderer {
     device: ash::Device,
     swapchain_loader: Swapchain,
     swapchain: vk::SwapchainKHR,
+    command_pool: vk::CommandPool,
+    comand_buffer: vk::CommandBuffer,
 }
 
 #[derive(Clone)]
@@ -83,6 +85,10 @@ impl Renderer {
             &swapchain_loader,
         );
 
+        let command_pool = create_command_pool(&device, phys_device_info.queue_family_idx);
+
+        let command_buffers = create_command_buffers(&device, command_pool, 2);
+
         Self {
             entry,
             instance,
@@ -94,6 +100,7 @@ impl Renderer {
             device,
             swapchain_loader,
             swapchain,
+            command_pool,
         }
     }
 }
@@ -103,6 +110,7 @@ impl Drop for Renderer {
         unsafe {
             self.device.device_wait_idle().unwrap();
 
+            self.device.destroy_command_pool(self.command_pool, None);
             self.swapchain_loader.destroy_swapchain(self.swapchain, None);
             self.device.destroy_device(None);
             self.surface_loader.destroy_surface(self.surface, None);
@@ -386,4 +394,25 @@ fn create_swapchain(
 
     unsafe { swapchain_loader.create_swapchain(&swapchain_create_info, None) }
         .check_err("create swapchain")
+}
+
+fn create_command_pool(device: &ash::Device, queue_family_idx: u32) -> vk::CommandPool {
+    let create_info = vk::CommandPoolCreateInfo::builder()
+        .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
+        .queue_family_index(queue_family_idx);
+
+    unsafe { device.create_command_pool(&create_info, None) }.check_err("create command pool")
+}
+
+fn create_command_buffers(
+    device: &ash::Device,
+    pool: vk::CommandPool,
+    num: u32,
+) -> Vec<vk::CommandBuffer> {
+    let allocate_info = vk::CommandBufferAllocateInfo::builder()
+        .command_buffer_count(num)
+        .command_pool(pool)
+        .level(vk::CommandBufferLevel::PRIMARY);
+
+    unsafe { device.allocate_command_buffers(&allocate_info) }.check_err("allocate command buffers")
 }
