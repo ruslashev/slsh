@@ -49,6 +49,7 @@ pub struct Renderer {
     render_pass: vk::RenderPass,
     pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
+    framebuffers: Vec<vk::Framebuffer>,
 }
 
 #[derive(Clone)]
@@ -75,11 +76,11 @@ impl Renderer {
         let surface_loader = Surface::new(&entry, &instance);
         let phys_device_info = pick_phys_device(&instance, surface, &surface_loader);
         let phys_device = phys_device_info.phys_device;
+        let device = create_logical_device(&instance, &phys_device_info);
+        let present_queue = device.get_device_queue(phys_device_info.queue_family_idx, 0);
         let surface_format = choose_swapchain_format(phys_device, &surface_loader, surface);
         let surface_capabilities = get_surface_capabilities(phys_device, &surface_loader, surface);
         let surface_resolution = choose_swapchain_extent(window, &surface_capabilities);
-        let device = create_logical_device(&instance, &phys_device_info);
-        let present_queue = device.get_device_queue(phys_device_info.queue_family_idx, 0);
         let swapchain_loader = Swapchain::new(&instance, &device);
         let swapchain = create_swapchain(
             phys_device,
@@ -98,6 +99,8 @@ impl Renderer {
         let pipeline_layout = create_pipeline_layout(&device);
         let pipeline =
             create_graphics_pipeline(&device, surface_resolution, render_pass, pipeline_layout);
+        let framebuffers =
+            create_framebuffers(&device, &swapchain_image_views, surface_resolution, render_pass);
 
         Self {
             entry,
@@ -116,11 +119,16 @@ impl Renderer {
             render_pass,
             pipeline_layout,
             pipeline,
+            framebuffers,
         }
     }
 
     unsafe fn cleanup_swapchain(&self) {
         self.device.device_wait_idle().unwrap();
+
+        for fb in &self.framebuffers {
+            self.device.destroy_framebuffer(*fb, None);
+        }
 
         self.device.destroy_pipeline(self.pipeline, None);
         self.device.destroy_pipeline_layout(self.pipeline_layout, None);
@@ -447,15 +455,7 @@ fn create_swapchain(
         surface_capabilities.current_transform
     };
 
-    let present_modes =
-        unsafe { surface_loader.get_physical_device_surface_present_modes(phys_device, surface) }
-            .check_err("get present modes");
-
-    let present_mode = present_modes
-        .iter()
-        .copied()
-        .find(|&mode| mode == vk::PresentModeKHR::MAILBOX)
-        .unwrap_or(vk::PresentModeKHR::FIFO);
+    let present_mode = choose_swapchain_present_mode(phys_device, surface, surface_loader);
 
     let create_info = vk::SwapchainCreateInfoKHR::builder()
         .surface(surface)
@@ -472,6 +472,29 @@ fn create_swapchain(
         .image_array_layers(1);
 
     unsafe { swapchain_loader.create_swapchain(&create_info, None) }.check_err("create swapchain")
+}
+
+fn choose_swapchain_present_mode(
+    phys_device: vk::PhysicalDevice,
+    surface: vk::SurfaceKHR,
+    surface_loader: &Surface,
+) -> vk::PresentModeKHR {
+    let mut modes =
+        unsafe { surface_loader.get_physical_device_surface_present_modes(phys_device, surface) }
+            .check_err("get present modes");
+
+    modes.sort_by_key(|m| present_mode_to_priority(*m));
+
+    modes[0]
+}
+
+fn present_mode_to_priority(mode: vk::PresentModeKHR) -> u32 {
+    match mode {
+        vk::PresentModeKHR::IMMEDIATE => 1,
+        vk::PresentModeKHR::FIFO_RELAXED => 2,
+        vk::PresentModeKHR::MAILBOX => 3,
+        _ => 4,
+    }
 }
 
 fn create_command_pool(device: &ash::Device, queue_family_idx: u32) -> vk::CommandPool {
@@ -812,4 +835,33 @@ fn pack_to_u32s(bytes: &[u8]) -> Vec<u32> {
             _ => unreachable!(),
         })
         .collect()
+}
+
+fn create_framebuffers(
+    device: &ash::Device,
+    image_views: &[vk::ImageView],
+    extent: vk::Extent2D,
+    render_pass: vk::RenderPass,
+) -> Vec<vk::Framebuffer> {
+    let mut framebuffers = Vec::with_capacity(image_views.len());
+
+    for image_view in image_views {
+        let create_info = vk::FramebufferCreateInfo {
+            s_type: vk::StructureType::FRAMEBUFFER_CREATE_INFO,
+            render_pass,
+            attachment_count: 1,
+            p_attachments: image_view,
+            width: extent.width,
+            height: extent.height,
+            layers: 1,
+            ..Default::default()
+        };
+
+        let framebuffer = unsafe { device.create_framebuffer(&create_info, None) }
+            .check_err("create framebuffer");
+
+        framebuffers.push(framebuffer);
+    }
+
+    framebuffers
 }
