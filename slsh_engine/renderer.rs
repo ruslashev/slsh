@@ -18,6 +18,8 @@ const API_VER_MAJOR: u32 = 1;
 const API_VER_MINOR: u32 = 0;
 const API_VER_PATCH: u32 = 0;
 
+const FRAMES_IN_FLIGHT: u32 = 2;
+
 trait CheckVkError<T> {
     fn check_err(self, action: &'static str) -> T;
 }
@@ -33,8 +35,9 @@ pub struct Renderer {
     device: ash::Device,
     swapchain_loader: Swapchain,
     swapchain: vk::SwapchainKHR,
+    swapchain_image_views: Vec<vk::ImageView>,
     command_pool: vk::CommandPool,
-    comand_buffer: vk::CommandBuffer,
+    command_buffers: Vec<vk::CommandBuffer>,
 }
 
 #[derive(Clone)]
@@ -48,8 +51,8 @@ struct PhysDeviceInfo {
 
 #[derive(Clone, Debug, Copy)]
 struct Vertex {
-    pos: [f32; 4],
-    color: [f32; 4],
+    pos: [f32; 2],
+    color: [f32; 3],
 }
 
 impl Renderer {
@@ -60,20 +63,11 @@ impl Renderer {
         let surface_loader = Surface::new(&entry, &instance);
         let phys_device_info = pick_phys_device(&instance, surface, &surface_loader);
         let phys_device = phys_device_info.phys_device;
-
-        let surface_format = surface_loader
-            .get_physical_device_surface_formats(phys_device, surface)
-            .check_err("get surface formats")[0];
-
-        let surface_capabilities = surface_loader
-            .get_physical_device_surface_capabilities(phys_device, surface)
-            .check_err("get surface capabilities");
-
+        let surface_format = choose_swapchain_format(phys_device, &surface_loader, surface);
+        let surface_capabilities = get_surface_capabilities(phys_device, &surface_loader, surface);
         let surface_resolution = choose_swapchain_extent(window, &surface_capabilities);
-
         let device = create_logical_device(&instance, &phys_device_info);
         let present_queue = device.get_device_queue(phys_device_info.queue_family_idx, 0);
-
         let swapchain_loader = Swapchain::new(&instance, &device);
         let swapchain = create_swapchain(
             phys_device,
@@ -84,10 +78,10 @@ impl Renderer {
             surface_resolution,
             &swapchain_loader,
         );
-
+        let swapchain_images = get_swapchain_images(&swapchain_loader, swapchain);
+        let swapchain_image_views = create_image_views(&device, surface_format, &swapchain_images);
         let command_pool = create_command_pool(&device, phys_device_info.queue_family_idx);
-
-        let command_buffers = create_command_buffers(&device, command_pool, 2);
+        let command_buffers = create_command_buffers(&device, command_pool, FRAMES_IN_FLIGHT + 1);
 
         Self {
             entry,
@@ -100,8 +94,18 @@ impl Renderer {
             device,
             swapchain_loader,
             swapchain,
+            swapchain_image_views,
             command_pool,
+            command_buffers,
         }
+    }
+
+    unsafe fn cleanup_swapchain(&self) {
+        self.device.free_command_buffers(self.command_pool, &self.command_buffers);
+        for image_view in &self.swapchain_image_views {
+            self.device.destroy_image_view(*image_view, None);
+        }
+        self.swapchain_loader.destroy_swapchain(self.swapchain, None);
     }
 }
 
@@ -110,6 +114,7 @@ impl Drop for Renderer {
         unsafe {
             self.device.device_wait_idle().unwrap();
 
+            self.cleanup_swapchain();
             self.device.destroy_command_pool(self.command_pool, None);
             self.swapchain_loader.destroy_swapchain(self.swapchain, None);
             self.device.destroy_device(None);
@@ -305,6 +310,27 @@ fn device_type_to_priority(type_: vk::PhysicalDeviceType) -> i32 {
     }
 }
 
+fn choose_swapchain_format(
+    phys_device: vk::PhysicalDevice,
+    surface_loader: &Surface,
+    surface: vk::SurfaceKHR,
+) -> vk::SurfaceFormatKHR {
+    let formats =
+        unsafe { surface_loader.get_physical_device_surface_formats(phys_device, surface) }
+            .check_err("get surface formats");
+
+    formats[0]
+}
+
+fn get_surface_capabilities(
+    phys_device: vk::PhysicalDevice,
+    surface_loader: &Surface,
+    surface: vk::SurfaceKHR,
+) -> vk::SurfaceCapabilitiesKHR {
+    unsafe { surface_loader.get_physical_device_surface_capabilities(phys_device, surface) }
+        .check_err("get surface capabilities")
+}
+
 fn choose_swapchain_extent(
     window: &Window,
     capabilities: &vk::SurfaceCapabilitiesKHR,
@@ -415,4 +441,59 @@ fn create_command_buffers(
         .level(vk::CommandBufferLevel::PRIMARY);
 
     unsafe { device.allocate_command_buffers(&allocate_info) }.check_err("allocate command buffers")
+}
+
+fn get_swapchain_images(
+    swapchain_loader: &Swapchain,
+    swapchain: vk::SwapchainKHR,
+) -> Vec<vk::Image> {
+    unsafe { swapchain_loader.get_swapchain_images(swapchain) }.check_err("get swapchain images")
+}
+
+fn create_image_views(
+    device: &ash::Device,
+    surface_format: vk::SurfaceFormatKHR,
+    images: &[vk::Image],
+) -> Vec<vk::ImageView> {
+    images
+        .iter()
+        .map(|&image| {
+            create_image_view(device, image, surface_format.format, vk::ImageAspectFlags::COLOR, 1)
+        })
+        .collect()
+}
+
+fn create_image_view(
+    device: &ash::Device,
+    image: vk::Image,
+    format: vk::Format,
+    aspect_mask: vk::ImageAspectFlags,
+    mip_levels: u32,
+) -> vk::ImageView {
+    let components = vk::ComponentMapping {
+        r: vk::ComponentSwizzle::IDENTITY,
+        g: vk::ComponentSwizzle::IDENTITY,
+        b: vk::ComponentSwizzle::IDENTITY,
+        a: vk::ComponentSwizzle::IDENTITY,
+    };
+
+    let subresource_range = vk::ImageSubresourceRange {
+        aspect_mask,
+        base_mip_level: 0,
+        level_count: mip_levels,
+        base_array_layer: 0,
+        layer_count: 1,
+    };
+
+    let create_info = vk::ImageViewCreateInfo {
+        s_type: vk::StructureType::IMAGE_VIEW_CREATE_INFO,
+        view_type: vk::ImageViewType::TYPE_2D,
+        format,
+        components,
+        subresource_range,
+        image,
+        ..Default::default()
+    };
+
+    unsafe { device.create_image_view(&create_info, None) }.check_err("create image view")
 }
