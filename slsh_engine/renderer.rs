@@ -1,6 +1,7 @@
 use std::default::Default;
 use std::ffi::{c_char, CStr, CString};
 use std::fmt::Display;
+use std::ptr;
 use std::str::FromStr;
 
 use ash::extensions::khr::{Surface, Swapchain};
@@ -38,6 +39,7 @@ pub struct Renderer {
     swapchain_image_views: Vec<vk::ImageView>,
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
+    render_pass: vk::RenderPass,
 }
 
 #[derive(Clone)]
@@ -82,6 +84,7 @@ impl Renderer {
         let swapchain_image_views = create_image_views(&device, surface_format, &swapchain_images);
         let command_pool = create_command_pool(&device, phys_device_info.queue_family_idx);
         let command_buffers = create_command_buffers(&device, command_pool, FRAMES_IN_FLIGHT + 1);
+        let render_pass = create_render_pass(&device, surface_format.format);
 
         Self {
             entry,
@@ -97,10 +100,14 @@ impl Renderer {
             swapchain_image_views,
             command_pool,
             command_buffers,
+            render_pass,
         }
     }
 
     unsafe fn cleanup_swapchain(&self) {
+        self.device.device_wait_idle().unwrap();
+
+        self.device.destroy_render_pass(self.render_pass, None);
         self.device.free_command_buffers(self.command_pool, &self.command_buffers);
         for image_view in &self.swapchain_image_views {
             self.device.destroy_image_view(*image_view, None);
@@ -116,7 +123,6 @@ impl Drop for Renderer {
 
             self.cleanup_swapchain();
             self.device.destroy_command_pool(self.command_pool, None);
-            self.swapchain_loader.destroy_swapchain(self.swapchain, None);
             self.device.destroy_device(None);
             self.surface_loader.destroy_surface(self.surface, None);
             self.instance.destroy_instance(None);
@@ -360,12 +366,12 @@ fn create_logical_device(instance: &ash::Instance, info: &PhysDeviceInfo) -> ash
         .queue_family_index(info.queue_family_idx)
         .queue_priorities(&priorities);
 
-    let device_create_info = vk::DeviceCreateInfo::builder()
+    let create_info = vk::DeviceCreateInfo::builder()
         .queue_create_infos(std::slice::from_ref(&queue_info))
         .enabled_extension_names(&req_exts_cptrs)
         .enabled_features(&features);
 
-    unsafe { instance.create_device(info.phys_device, &device_create_info, None) }
+    unsafe { instance.create_device(info.phys_device, &create_info, None) }
         .check_err("create device")
 }
 
@@ -404,7 +410,7 @@ fn create_swapchain(
         .find(|&mode| mode == vk::PresentModeKHR::MAILBOX)
         .unwrap_or(vk::PresentModeKHR::FIFO);
 
-    let swapchain_create_info = vk::SwapchainCreateInfoKHR::builder()
+    let create_info = vk::SwapchainCreateInfoKHR::builder()
         .surface(surface)
         .min_image_count(image_count)
         .image_color_space(surface_format.color_space)
@@ -418,8 +424,7 @@ fn create_swapchain(
         .clipped(true)
         .image_array_layers(1);
 
-    unsafe { swapchain_loader.create_swapchain(&swapchain_create_info, None) }
-        .check_err("create swapchain")
+    unsafe { swapchain_loader.create_swapchain(&create_info, None) }.check_err("create swapchain")
 }
 
 fn create_command_pool(device: &ash::Device, queue_family_idx: u32) -> vk::CommandPool {
@@ -496,4 +501,54 @@ fn create_image_view(
     };
 
     unsafe { device.create_image_view(&create_info, None) }.check_err("create image view")
+}
+
+fn create_render_pass(device: &ash::Device, surface_format: vk::Format) -> vk::RenderPass {
+    let color_attachment = vk::AttachmentDescription {
+        format: surface_format,
+        flags: vk::AttachmentDescriptionFlags::empty(),
+        samples: vk::SampleCountFlags::TYPE_1,
+        load_op: vk::AttachmentLoadOp::CLEAR,
+        store_op: vk::AttachmentStoreOp::STORE,
+        stencil_load_op: vk::AttachmentLoadOp::DONT_CARE,
+        stencil_store_op: vk::AttachmentStoreOp::DONT_CARE,
+        initial_layout: vk::ImageLayout::UNDEFINED,
+        final_layout: vk::ImageLayout::PRESENT_SRC_KHR,
+    };
+
+    let color_attachment_ref = vk::AttachmentReference {
+        attachment: 0,
+        layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+    };
+
+    let subpass = vk::SubpassDescription {
+        pipeline_bind_point: vk::PipelineBindPoint::GRAPHICS,
+        color_attachment_count: 1,
+        p_color_attachments: &color_attachment_ref,
+        ..Default::default()
+    };
+
+    let subpass_dependency = vk::SubpassDependency {
+        src_subpass: vk::SUBPASS_EXTERNAL,
+        dst_subpass: 0,
+        src_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+        src_access_mask: vk::AccessFlags::empty(),
+        dst_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+        dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+        dependency_flags: vk::DependencyFlags::empty(),
+    };
+
+    let create_info = vk::RenderPassCreateInfo {
+        s_type: vk::StructureType::RENDER_PASS_CREATE_INFO,
+        flags: vk::RenderPassCreateFlags::empty(),
+        p_next: ptr::null(),
+        attachment_count: 1,
+        p_attachments: [color_attachment].as_ptr(),
+        subpass_count: 1,
+        p_subpasses: [subpass].as_ptr(),
+        dependency_count: 1,
+        p_dependencies: [subpass_dependency].as_ptr(),
+    };
+
+    unsafe { device.create_render_pass(&create_info, None) }.check_err("create render pass")
 }
