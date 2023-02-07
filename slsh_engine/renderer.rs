@@ -25,6 +25,10 @@ trait CheckVkError<T> {
 pub struct Renderer {
     entry: ash::Entry,
     instance: ash::Instance,
+    surface_loader: Surface,
+    surface: vk::SurfaceKHR,
+    phys_device: vk::PhysicalDevice,
+    device: ash::Device,
 }
 
 #[derive(Clone)]
@@ -33,7 +37,7 @@ struct PhysDeviceInfo {
     properties: vk::PhysicalDeviceProperties,
     queue_families: Vec<vk::QueueFamilyProperties>,
     extensions: Vec<vk::ExtensionProperties>,
-    queue_family_idx: i32,
+    queue_family_idx: u32,
 }
 
 #[derive(Clone, Debug, Copy)]
@@ -47,15 +51,30 @@ impl Renderer {
         let entry = ash::Entry::linked();
         let instance = create_instance(app_name, &entry, window);
         let surface = window.create_surface(&instance);
-        let phys_device = pick_phys_device(&entry, &instance, surface);
+        let surface_loader = Surface::new(&entry, &instance);
+        let phys_device_info = pick_phys_device(&entry, &instance, surface, &surface_loader);
+        let device = create_logical_device(&instance, &phys_device_info);
 
-        Self { instance, entry }
+        Self {
+            entry,
+            instance,
+            surface_loader,
+            surface,
+            phys_device: phys_device_info.phys_device,
+            device,
+        }
     }
 }
 
 impl Drop for Renderer {
     fn drop(&mut self) {
-        unsafe {}
+        unsafe {
+            self.device.device_wait_idle().unwrap();
+
+            self.device.destroy_device(None);
+            self.surface_loader.destroy_surface(self.surface, None);
+            self.instance.destroy_instance(None);
+        }
     }
 }
 
@@ -147,9 +166,9 @@ unsafe fn pick_phys_device(
     entry: &ash::Entry,
     instance: &ash::Instance,
     surface: vk::SurfaceKHR,
+    surface_loader: &Surface,
 ) -> PhysDeviceInfo {
     let phys_devices = instance.enumerate_physical_devices().check_err("get physical devices");
-    let surface_loader = Surface::new(&entry, &instance);
     let mut phys_device_infos =
         gather_phys_device_infos(instance, surface, surface_loader, &phys_devices);
 
@@ -163,7 +182,7 @@ unsafe fn pick_phys_device(
 unsafe fn gather_phys_device_infos(
     instance: &ash::Instance,
     surface: vk::SurfaceKHR,
-    surface_loader: Surface,
+    surface_loader: &Surface,
     phys_devices: &[vk::PhysicalDevice],
 ) -> Vec<PhysDeviceInfo> {
     let mut phys_device_infos = Vec::with_capacity(phys_devices.len());
@@ -244,4 +263,28 @@ fn device_type_to_priority(type_: vk::PhysicalDeviceType) -> i32 {
         vk::PhysicalDeviceType::CPU => 4,
         _ => 5,
     }
+}
+
+fn create_logical_device(instance: &ash::Instance, info: &PhysDeviceInfo) -> ash::Device {
+    let features = vk::PhysicalDeviceFeatures {
+        shader_clip_distance: 1,
+        ..Default::default()
+    };
+    let priorities = [1.0];
+
+    let req_exts_strings = convert_to_strings(REQ_DEVICE_EXTENSIONS);
+    let req_exts_cstrings = convert_to_c_strs(&req_exts_strings);
+    let req_exts_cptrs = convert_to_c_ptrs(&req_exts_cstrings);
+
+    let queue_info = vk::DeviceQueueCreateInfo::builder()
+        .queue_family_index(info.queue_family_idx)
+        .queue_priorities(&priorities);
+
+    let device_create_info = vk::DeviceCreateInfo::builder()
+        .queue_create_infos(std::slice::from_ref(&queue_info))
+        .enabled_extension_names(&req_exts_cptrs)
+        .enabled_features(&features);
+
+    unsafe { instance.create_device(info.phys_device, &device_create_info, None) }
+        .check_err("create device")
 }
