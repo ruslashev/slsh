@@ -3,7 +3,7 @@ use std::ffi::{c_char, CStr, CString};
 use std::fmt::Display;
 use std::str::FromStr;
 
-use ash::extensions::khr::Surface;
+use ash::extensions::khr::{Surface, Swapchain};
 use ash::vk;
 
 use crate::window::Window;
@@ -27,8 +27,12 @@ pub struct Renderer {
     instance: ash::Instance,
     surface_loader: Surface,
     surface: vk::SurfaceKHR,
+    surface_format: vk::SurfaceFormatKHR,
+    surface_resolution: vk::Extent2D,
     phys_device: vk::PhysicalDevice,
     device: ash::Device,
+    swapchain_loader: Swapchain,
+    swapchain: vk::SwapchainKHR,
 }
 
 #[derive(Clone)]
@@ -53,15 +57,43 @@ impl Renderer {
         let surface = window.create_surface(&instance);
         let surface_loader = Surface::new(&entry, &instance);
         let phys_device_info = pick_phys_device(&entry, &instance, surface, &surface_loader);
+        let phys_device = phys_device_info.phys_device;
+
+        let surface_format = surface_loader
+            .get_physical_device_surface_formats(phys_device, surface)
+            .check_err("get surface formats")[0];
+
+        let surface_capabilities = surface_loader
+            .get_physical_device_surface_capabilities(phys_device, surface)
+            .check_err("get surface capabilities");
+
+        let surface_resolution = choose_swapchain_extent(window, &surface_capabilities);
+
         let device = create_logical_device(&instance, &phys_device_info);
+        let present_queue = device.get_device_queue(phys_device_info.queue_family_idx, 0);
+
+        let swapchain_loader = Swapchain::new(&instance, &device);
+        let swapchain = create_swapchain(
+            phys_device,
+            surface,
+            &surface_loader,
+            &surface_capabilities,
+            &surface_format,
+            surface_resolution,
+            &swapchain_loader,
+        );
 
         Self {
             entry,
             instance,
             surface_loader,
             surface,
-            phys_device: phys_device_info.phys_device,
+            surface_format,
+            surface_resolution,
+            phys_device,
             device,
+            swapchain_loader,
+            swapchain,
         }
     }
 }
@@ -71,6 +103,7 @@ impl Drop for Renderer {
         unsafe {
             self.device.device_wait_idle().unwrap();
 
+            self.swapchain_loader.destroy_swapchain(self.swapchain, None);
             self.device.destroy_device(None);
             self.surface_loader.destroy_surface(self.surface, None);
             self.instance.destroy_instance(None);
@@ -265,6 +298,20 @@ fn device_type_to_priority(type_: vk::PhysicalDeviceType) -> i32 {
     }
 }
 
+fn choose_swapchain_extent(
+    window: &Window,
+    capabilities: &vk::SurfaceCapabilitiesKHR,
+) -> vk::Extent2D {
+    if capabilities.current_extent.width != u32::MAX {
+        return capabilities.current_extent;
+    }
+
+    vk::Extent2D {
+        width: window.width(),
+        height: window.height(),
+    }
+}
+
 fn create_logical_device(instance: &ash::Instance, info: &PhysDeviceInfo) -> ash::Device {
     let features = vk::PhysicalDeviceFeatures {
         shader_clip_distance: 1,
@@ -287,4 +334,57 @@ fn create_logical_device(instance: &ash::Instance, info: &PhysDeviceInfo) -> ash
 
     unsafe { instance.create_device(info.phys_device, &device_create_info, None) }
         .check_err("create device")
+}
+
+fn create_swapchain(
+    phys_device: vk::PhysicalDevice,
+    surface: vk::SurfaceKHR,
+    surface_loader: &Surface,
+    surface_capabilities: &vk::SurfaceCapabilitiesKHR,
+    surface_format: &vk::SurfaceFormatKHR,
+    surface_resolution: vk::Extent2D,
+    swapchain_loader: &Swapchain,
+) -> vk::SwapchainKHR {
+    let max_image_count = surface_capabilities.max_image_count;
+    let mut image_count = surface_capabilities.min_image_count + 1;
+
+    if image_count > max_image_count && max_image_count > 0 {
+        image_count = max_image_count;
+    }
+
+    let pre_transform = if surface_capabilities
+        .supported_transforms
+        .contains(vk::SurfaceTransformFlagsKHR::IDENTITY)
+    {
+        vk::SurfaceTransformFlagsKHR::IDENTITY
+    } else {
+        surface_capabilities.current_transform
+    };
+
+    let present_modes =
+        unsafe { surface_loader.get_physical_device_surface_present_modes(phys_device, surface) }
+            .check_err("get present modes");
+
+    let present_mode = present_modes
+        .iter()
+        .cloned()
+        .find(|&mode| mode == vk::PresentModeKHR::MAILBOX)
+        .unwrap_or(vk::PresentModeKHR::FIFO);
+
+    let swapchain_create_info = vk::SwapchainCreateInfoKHR::builder()
+        .surface(surface)
+        .min_image_count(image_count)
+        .image_color_space(surface_format.color_space)
+        .image_format(surface_format.format)
+        .image_extent(surface_resolution)
+        .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
+        .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .pre_transform(pre_transform)
+        .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
+        .present_mode(present_mode)
+        .clipped(true)
+        .image_array_layers(1);
+
+    unsafe { swapchain_loader.create_swapchain(&swapchain_create_info, None) }
+        .check_err("create swapchain")
 }
