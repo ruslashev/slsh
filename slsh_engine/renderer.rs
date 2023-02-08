@@ -54,6 +54,9 @@ pub struct Renderer {
     vertex_buffer_memory: vk::DeviceMemory,
     index_buffer: vk::Buffer,
     index_buffer_memory: vk::DeviceMemory,
+    image_available: Vec<vk::Semaphore>,
+    render_finished: Vec<vk::Semaphore>,
+    is_rendering: Vec<vk::Fence>,
 }
 
 #[derive(Default, Clone)]
@@ -159,6 +162,8 @@ impl Renderer {
             &indices,
         );
 
+        let (image_available, render_finished, is_rendering) = create_sync_objects(&device);
+
         Self {
             entry,
             instance,
@@ -181,6 +186,9 @@ impl Renderer {
             vertex_buffer_memory,
             index_buffer,
             index_buffer_memory,
+            image_available,
+            render_finished,
+            is_rendering,
         }
     }
 
@@ -206,6 +214,18 @@ impl Drop for Renderer {
     fn drop(&mut self) {
         unsafe {
             self.device.device_wait_idle().unwrap();
+
+            for sem in &self.image_available {
+                self.device.destroy_semaphore(*sem, None);
+            }
+
+            for sem in &self.render_finished {
+                self.device.destroy_semaphore(*sem, None);
+            }
+
+            for fence in &self.is_rendering {
+                self.device.destroy_fence(*fence, None);
+            }
 
             self.cleanup_swapchain();
 
@@ -1144,4 +1164,38 @@ fn copy_buffers(
 
         device.free_command_buffers(command_pool, &[cmd_buffer]);
     }
+}
+
+fn create_sync_objects(
+    device: &ash::Device,
+) -> (Vec<vk::Semaphore>, Vec<vk::Semaphore>, Vec<vk::Fence>) {
+    let mut image_available = Vec::with_capacity(FRAMES_IN_FLIGHT as usize);
+    let mut render_finished = Vec::with_capacity(FRAMES_IN_FLIGHT as usize);
+    let mut is_rendering = Vec::with_capacity(FRAMES_IN_FLIGHT as usize);
+
+    for _ in 0..FRAMES_IN_FLIGHT {
+        image_available.push(create_semaphore(device));
+        render_finished.push(create_semaphore(device));
+        is_rendering.push(create_fence(device));
+    }
+
+    (image_available, render_finished, is_rendering)
+}
+
+fn create_semaphore(device: &ash::Device) -> vk::Semaphore {
+    let create_info = vk::SemaphoreCreateInfo {
+        s_type: vk::StructureType::SEMAPHORE_CREATE_INFO,
+        ..Default::default()
+    };
+
+    unsafe { device.create_semaphore(&create_info, None) }.check_err("create semaphore")
+}
+
+fn create_fence(device: &ash::Device) -> vk::Fence {
+    let create_info = vk::FenceCreateInfo {
+        s_type: vk::StructureType::FENCE_CREATE_INFO,
+        ..Default::default()
+    };
+
+    unsafe { device.create_fence(&create_info, None) }.check_err("create fence")
 }
