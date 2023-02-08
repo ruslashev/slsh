@@ -47,7 +47,7 @@ impl MainLoop {
                 break;
             }
 
-            // self.renderer.present();
+            self.renderer.present();
         }
     }
 }

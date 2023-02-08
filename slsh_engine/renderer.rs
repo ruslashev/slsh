@@ -26,7 +26,7 @@ const API_VER_MAJOR: u32 = 1;
 const API_VER_MINOR: u32 = 0;
 const API_VER_PATCH: u32 = 0;
 
-const FRAMES_IN_FLIGHT: u32 = 2;
+const FRAMES_IN_FLIGHT: usize = 2;
 
 trait CheckVkError<T> {
     fn check_err(self, action: &'static str) -> T;
@@ -41,6 +41,8 @@ pub struct Renderer {
     surface_resolution: vk::Extent2D,
     phys_device: vk::PhysicalDevice,
     device: ash::Device,
+    graphics_queue: vk::Queue,
+    present_queue: vk::Queue,
     swapchain_loader: Swapchain,
     swapchain: vk::SwapchainKHR,
     swapchain_image_views: Vec<vk::ImageView>,
@@ -54,9 +56,11 @@ pub struct Renderer {
     vertex_buffer_memory: vk::DeviceMemory,
     index_buffer: vk::Buffer,
     index_buffer_memory: vk::DeviceMemory,
+    index_count: u32,
     image_available: Vec<vk::Semaphore>,
     render_finished: Vec<vk::Semaphore>,
     is_rendering: Vec<vk::Fence>,
+    current_frame: usize,
 }
 
 #[derive(Default, Clone)]
@@ -90,8 +94,6 @@ impl Renderer {
         let surface_loader = Surface::new(&entry, &instance);
         let phys_device_info = pick_phys_device(&instance, surface, &surface_loader);
         let phys_device = phys_device_info.phys_device;
-        let queue_family_indices =
-            get_queue_family_indices(&instance, phys_device, surface, &surface_loader);
         let device = create_logical_device(&instance, &phys_device_info);
         let gfx_queue_idx = phys_device_info.queue_family_indices.graphics.unwrap();
         let present_queue_idx = phys_device_info.queue_family_indices.present.unwrap();
@@ -113,7 +115,8 @@ impl Renderer {
         let swapchain_images = get_swapchain_images(&swapchain_loader, swapchain);
         let swapchain_image_views = create_image_views(&device, surface_format, &swapchain_images);
         let command_pool = create_command_pool(&device, gfx_queue_idx);
-        let command_buffers = create_command_buffers(&device, command_pool, FRAMES_IN_FLIGHT + 1);
+        let command_buffers =
+            create_command_buffers(&device, command_pool, FRAMES_IN_FLIGHT as u32);
         let render_pass = create_render_pass(&device, surface_format.format);
         let pipeline_layout = create_pipeline_layout(&device);
         let pipeline =
@@ -162,6 +165,8 @@ impl Renderer {
             &indices,
         );
 
+        let index_count = indices.len() as u32;
+
         let (image_available, render_finished, is_rendering) = create_sync_objects(&device);
 
         Self {
@@ -173,6 +178,8 @@ impl Renderer {
             surface_resolution,
             phys_device,
             device,
+            graphics_queue,
+            present_queue,
             swapchain_loader,
             swapchain,
             swapchain_image_views,
@@ -186,10 +193,146 @@ impl Renderer {
             vertex_buffer_memory,
             index_buffer,
             index_buffer_memory,
+            index_count,
             image_available,
             render_finished,
             is_rendering,
+            current_frame: 0,
         }
+    }
+
+    fn record_commands_to_buffer(
+        &self,
+        cmd_buffer: vk::CommandBuffer,
+        framebuffer: vk::Framebuffer,
+    ) {
+        let begin_info = vk::CommandBufferBeginInfo {
+            s_type: vk::StructureType::COMMAND_BUFFER_BEGIN_INFO,
+            ..Default::default()
+        };
+
+        let clear_color = vk::ClearValue {
+            color: vk::ClearColorValue {
+                float32: [0.0, 0.0, 0.0, 1.0],
+            },
+        };
+
+        let render_pass_info = vk::RenderPassBeginInfo {
+            s_type: vk::StructureType::RENDER_PASS_BEGIN_INFO,
+            render_pass: self.render_pass,
+            framebuffer,
+            render_area: vk::Rect2D {
+                offset: vk::Offset2D { x: 0, y: 0 },
+                extent: self.surface_resolution,
+            },
+            clear_value_count: 1,
+            p_clear_values: &clear_color,
+            ..Default::default()
+        };
+
+        unsafe {
+            self.device
+                .reset_command_buffer(cmd_buffer, vk::CommandBufferResetFlags::empty())
+                .check_err("reset cmd buffer");
+
+            self.device
+                .begin_command_buffer(cmd_buffer, &begin_info)
+                .check_err("begin recording to command buffer");
+
+            self.device.cmd_begin_render_pass(
+                cmd_buffer,
+                &render_pass_info,
+                vk::SubpassContents::INLINE,
+            );
+
+            self.device.cmd_bind_pipeline(
+                cmd_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pipeline,
+            );
+
+            self.device.cmd_bind_vertex_buffers(cmd_buffer, 0, &[self.vertex_buffer], &[0]);
+
+            self.device.cmd_bind_index_buffer(
+                cmd_buffer,
+                self.index_buffer,
+                0,
+                vk::IndexType::UINT16,
+            );
+
+            self.device.cmd_draw_indexed(cmd_buffer, self.index_count, 1, 0, 0, 0);
+
+            self.device.cmd_end_render_pass(cmd_buffer);
+
+            self.device.end_command_buffer(cmd_buffer).check_err("end command buffer recording");
+        }
+    }
+
+    pub fn present(&mut self) {
+        let timeout = u64::MAX;
+
+        let command_buffer = self.command_buffers[self.current_frame];
+        let image_available = self.image_available[self.current_frame];
+        let render_finished = self.render_finished[self.current_frame];
+        let is_rendering = self.is_rendering[self.current_frame];
+
+        let image_index = unsafe {
+            self.device
+                .wait_for_fences(&[is_rendering], true, timeout)
+                .check_err("wait for fences");
+
+            let (image_index, _out_of_date) = self
+                .swapchain_loader
+                .acquire_next_image(self.swapchain, timeout, image_available, vk::Fence::null())
+                .check_err("acquire next image");
+
+            // if out_of_date {
+            //     self.recreate_swapchain();
+            //     return;
+            // }
+
+            self.device.reset_fences(&[is_rendering]).check_err("reset fences");
+
+            image_index
+        };
+
+        self.record_commands_to_buffer(command_buffer, self.framebuffers[image_index as usize]);
+
+        let submit_info = vk::SubmitInfo {
+            s_type: vk::StructureType::SUBMIT_INFO,
+            wait_semaphore_count: 1,
+            p_wait_semaphores: &image_available,
+            p_wait_dst_stage_mask: &vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            command_buffer_count: 1,
+            p_command_buffers: &command_buffer,
+            signal_semaphore_count: 1,
+            p_signal_semaphores: &render_finished,
+            ..Default::default()
+        };
+
+        unsafe {
+            self.device
+                .queue_submit(self.graphics_queue, &[submit_info], is_rendering)
+                .check_err("submit to draw queue");
+        }
+
+        let present_info = vk::PresentInfoKHR {
+            s_type: vk::StructureType::PRESENT_INFO_KHR,
+            wait_semaphore_count: 1,
+            p_wait_semaphores: &render_finished,
+            swapchain_count: 1,
+            p_swapchains: &self.swapchain,
+            p_image_indices: &image_index,
+            ..Default::default()
+        };
+
+        unsafe {
+            self.swapchain_loader
+                .queue_present(self.present_queue, &present_info)
+                .check_err("queue image for presentation");
+        }
+
+        self.current_frame = (self.current_frame + 1) % FRAMES_IN_FLIGHT;
     }
 
     unsafe fn cleanup_swapchain(&self) {
@@ -1169,9 +1312,9 @@ fn copy_buffers(
 fn create_sync_objects(
     device: &ash::Device,
 ) -> (Vec<vk::Semaphore>, Vec<vk::Semaphore>, Vec<vk::Fence>) {
-    let mut image_available = Vec::with_capacity(FRAMES_IN_FLIGHT as usize);
-    let mut render_finished = Vec::with_capacity(FRAMES_IN_FLIGHT as usize);
-    let mut is_rendering = Vec::with_capacity(FRAMES_IN_FLIGHT as usize);
+    let mut image_available = Vec::with_capacity(FRAMES_IN_FLIGHT);
+    let mut render_finished = Vec::with_capacity(FRAMES_IN_FLIGHT);
+    let mut is_rendering = Vec::with_capacity(FRAMES_IN_FLIGHT);
 
     for _ in 0..FRAMES_IN_FLIGHT {
         image_available.push(create_semaphore(device));
