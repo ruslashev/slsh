@@ -1,5 +1,5 @@
 use std::default::Default;
-use std::ffi::{c_char, CStr, CString};
+use std::ffi::{c_char, c_void, CStr, CString};
 use std::fmt::Display;
 use std::mem::size_of;
 use std::ptr;
@@ -50,6 +50,10 @@ pub struct Renderer {
     pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
     framebuffers: Vec<vk::Framebuffer>,
+    vertex_buffer: vk::Buffer,
+    vertex_buffer_memory: vk::DeviceMemory,
+    index_buffer: vk::Buffer,
+    index_buffer_memory: vk::DeviceMemory,
 }
 
 #[derive(Default, Clone)]
@@ -114,6 +118,47 @@ impl Renderer {
         let framebuffers =
             create_framebuffers(&device, &swapchain_image_views, surface_resolution, render_pass);
 
+        let device_mem_properties = instance.get_physical_device_memory_properties(phys_device);
+
+        let vertices = [
+            Vertex {
+                pos: [-0.5, -0.5],
+                color: [1.0, 0.0, 0.0],
+            },
+            Vertex {
+                pos: [0.5, -0.5],
+                color: [0.0, 1.0, 0.0],
+            },
+            Vertex {
+                pos: [0.5, 0.5],
+                color: [0.0, 0.0, 1.0],
+            },
+            Vertex {
+                pos: [-0.5, 0.5],
+                color: [1.0, 1.0, 1.0],
+            },
+        ];
+
+        let (vertex_buffer, vertex_buffer_memory) = create_buffer_of_type(
+            &device,
+            &device_mem_properties,
+            command_pool,
+            graphics_queue,
+            vk::BufferUsageFlags::VERTEX_BUFFER,
+            &vertices,
+        );
+
+        let indices = [0, 1, 2, 2, 3, 0];
+
+        let (index_buffer, index_buffer_memory) = create_buffer_of_type(
+            &device,
+            &device_mem_properties,
+            command_pool,
+            graphics_queue,
+            vk::BufferUsageFlags::INDEX_BUFFER,
+            &indices,
+        );
+
         Self {
             entry,
             instance,
@@ -132,6 +177,10 @@ impl Renderer {
             pipeline_layout,
             pipeline,
             framebuffers,
+            vertex_buffer,
+            vertex_buffer_memory,
+            index_buffer,
+            index_buffer_memory,
         }
     }
 
@@ -159,6 +208,12 @@ impl Drop for Renderer {
             self.device.device_wait_idle().unwrap();
 
             self.cleanup_swapchain();
+
+            self.device.destroy_buffer(self.index_buffer, None);
+            self.device.free_memory(self.index_buffer_memory, None);
+            self.device.destroy_buffer(self.vertex_buffer, None);
+            self.device.free_memory(self.vertex_buffer_memory, None);
+
             self.device.destroy_command_pool(self.command_pool, None);
             self.device.destroy_device(None);
             self.surface_loader.destroy_surface(self.surface, None);
@@ -923,4 +978,170 @@ fn create_framebuffers(
     }
 
     framebuffers
+}
+
+fn create_buffer_of_type<T: Copy>(
+    device: &ash::Device,
+    device_mem_properties: &vk::PhysicalDeviceMemoryProperties,
+    command_pool: vk::CommandPool,
+    queue: vk::Queue,
+    usage: vk::BufferUsageFlags,
+    data: &[T],
+) -> (vk::Buffer, vk::DeviceMemory) {
+    let size_bytes: u64 = (data.len() * size_of::<T>()).try_into().unwrap();
+
+    let (staging_buffer, staging_memory) = unsafe {
+        create_buffer(
+            device,
+            device_mem_properties,
+            size_bytes,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            vk::MemoryPropertyFlags::HOST_VISIBLE,
+        )
+    };
+
+    upload_to_buffer_memory(device, staging_memory, data);
+
+    let (buffer, memory) = unsafe {
+        create_buffer(
+            device,
+            device_mem_properties,
+            size_bytes,
+            usage | vk::BufferUsageFlags::TRANSFER_DST,
+            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        )
+    };
+
+    copy_buffers(device, command_pool, queue, staging_buffer, buffer, size_bytes);
+
+    unsafe {
+        device.destroy_buffer(staging_buffer, None);
+        device.free_memory(staging_memory, None);
+    }
+
+    (buffer, memory)
+}
+
+unsafe fn create_buffer(
+    device: &ash::Device,
+    device_mem_properties: &vk::PhysicalDeviceMemoryProperties,
+    size: u64,
+    usage: vk::BufferUsageFlags,
+    properties: vk::MemoryPropertyFlags,
+) -> (vk::Buffer, vk::DeviceMemory) {
+    let create_info = vk::BufferCreateInfo {
+        s_type: vk::StructureType::BUFFER_CREATE_INFO,
+        size,
+        usage,
+        sharing_mode: vk::SharingMode::EXCLUSIVE,
+        ..Default::default()
+    };
+
+    let buffer = device.create_buffer(&create_info, None).check_err("create buffer");
+
+    let mem_requirements = device.get_buffer_memory_requirements(buffer);
+
+    let memory_type =
+        find_memory_type(mem_requirements.memory_type_bits, properties, device_mem_properties)
+            .check_err("find appropriate memory type");
+
+    let alloc_info = vk::MemoryAllocateInfo {
+        s_type: vk::StructureType::MEMORY_ALLOCATE_INFO,
+        allocation_size: mem_requirements.size,
+        memory_type_index: memory_type,
+        ..Default::default()
+    };
+
+    let memory = device.allocate_memory(&alloc_info, None).check_err("allocate buffer memory");
+
+    device.bind_buffer_memory(buffer, memory, 0).check_err("bind buffer");
+
+    (buffer, memory)
+}
+
+fn find_memory_type(
+    req_type: u32,
+    req_properties: vk::MemoryPropertyFlags,
+    mem_properties: &vk::PhysicalDeviceMemoryProperties,
+) -> Option<u32> {
+    for (i, memory_type) in mem_properties.memory_types.iter().enumerate() {
+        if req_type & (1 << i) == 0 {
+            continue;
+        }
+
+        if !memory_type.property_flags.contains(req_properties) {
+            continue;
+        }
+
+        return Some(i as u32);
+    }
+
+    None
+}
+
+fn upload_to_buffer_memory<T: Copy>(device: &ash::Device, memory: vk::DeviceMemory, data: &[T]) {
+    let size_bytes: u64 = (data.len() * size_of::<T>()).try_into().unwrap();
+
+    let memory_range = vk::MappedMemoryRange {
+        s_type: vk::StructureType::MAPPED_MEMORY_RANGE,
+        memory,
+        offset: 0,
+        size: size_bytes,
+        ..Default::default()
+    };
+
+    unsafe {
+        let out_ptr = device
+            .map_memory(memory, 0, size_bytes, vk::MemoryMapFlags::empty())
+            .check_err("map memory");
+
+        out_ptr.copy_from_nonoverlapping(data.as_ptr().cast::<c_void>(), data.len());
+
+        device.flush_mapped_memory_ranges(&[memory_range]).check_err("flush mapped memory");
+
+        device.unmap_memory(memory);
+    }
+}
+
+fn copy_buffers(
+    device: &ash::Device,
+    command_pool: vk::CommandPool,
+    queue: vk::Queue,
+    src: vk::Buffer,
+    dst: vk::Buffer,
+    size: u64,
+) {
+    let cmd_buffer = create_command_buffers(device, command_pool, 1)[0];
+
+    let begin_info = vk::CommandBufferBeginInfo {
+        s_type: vk::StructureType::COMMAND_BUFFER_BEGIN_INFO,
+        flags: vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT,
+        ..Default::default()
+    };
+
+    let copy_region = vk::BufferCopy {
+        size,
+        ..Default::default()
+    };
+
+    let submit_info = vk::SubmitInfo {
+        s_type: vk::StructureType::SUBMIT_INFO,
+        command_buffer_count: 1,
+        p_command_buffers: &cmd_buffer,
+        ..Default::default()
+    };
+
+    unsafe {
+        device.begin_command_buffer(cmd_buffer, &begin_info).check_err("begin cmd buffer");
+
+        device.cmd_copy_buffer(cmd_buffer, src, dst, &[copy_region]);
+
+        device.end_command_buffer(cmd_buffer).check_err("end cmd buffer");
+
+        device.queue_submit(queue, &[submit_info], vk::Fence::null()).check_err("submit to queue");
+
+        device.queue_wait_idle(queue).check_err("wait for queue");
+
+        device.free_command_buffers(command_pool, &[cmd_buffer]);
+    }
 }
