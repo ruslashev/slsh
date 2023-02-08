@@ -22,6 +22,9 @@ GLSLC_FLAGS = -O
 run: $(BIN)
 	@$(BIN)
 
+gdb: $(BIN)
+	gdb $(BIN) -ex run
+
 all: $(BIN)
 
 $(BIN): $(BUILT_SHADERS)
