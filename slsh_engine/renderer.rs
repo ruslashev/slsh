@@ -1,5 +1,5 @@
 use std::default::Default;
-use std::ffi::{c_char, c_void, CStr, CString};
+use std::ffi::{c_char, CStr, CString};
 use std::fmt::Display;
 use std::mem::size_of;
 use std::ptr;
@@ -1306,9 +1306,10 @@ fn upload_to_buffer_memory<T: Copy>(device: &ash::Device, memory: vk::DeviceMemo
     unsafe {
         let out_ptr = device
             .map_memory(memory, 0, size_bytes, vk::MemoryMapFlags::empty())
-            .check_err("map memory");
+            .check_err("map memory")
+            .cast::<T>();
 
-        out_ptr.copy_from_nonoverlapping(data.as_ptr().cast::<c_void>(), data.len());
+        out_ptr.copy_from_nonoverlapping(data.as_ptr(), data.len());
 
         device.flush_mapped_memory_ranges(&[memory_range]).check_err("flush mapped memory");
 
