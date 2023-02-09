@@ -33,16 +33,13 @@ trait CheckVkError<T> {
 }
 
 pub struct Renderer {
-    entry: ash::Entry,
     instance: ash::Instance,
     surface_loader: Surface,
     surface: vk::SurfaceKHR,
-    surface_format: vk::SurfaceFormatKHR,
-    surface_resolution: vk::Extent2D,
-    phys_device: vk::PhysicalDevice,
     device: ash::Device,
     graphics_queue: vk::Queue,
     present_queue: vk::Queue,
+    swapchain_extent: vk::Extent2D,
     swapchain_loader: Swapchain,
     swapchain: vk::SwapchainKHR,
     swapchain_image_views: Vec<vk::ImageView>,
@@ -89,8 +86,8 @@ impl Renderer {
     pub unsafe fn new(app_name: &'static str, window: &Window) -> Self {
         let entry = ash::Entry::linked();
         let instance = create_instance(app_name, &entry, window);
-        let surface = window.create_surface(&instance);
         let surface_loader = Surface::new(&entry, &instance);
+        let surface = window.create_surface(&instance);
         let phys_device_info = pick_phys_device(&instance, surface, &surface_loader);
         let phys_device = phys_device_info.phys_device;
         let device = create_logical_device(&instance, &phys_device_info);
@@ -98,31 +95,31 @@ impl Renderer {
         let present_queue_idx = phys_device_info.queue_family_indices.present.unwrap();
         let graphics_queue = device.get_device_queue(gfx_queue_idx, 0);
         let present_queue = device.get_device_queue(present_queue_idx, 0);
-        let surface_format = choose_swapchain_format(phys_device, &surface_loader, surface);
         let surface_capabilities = get_surface_capabilities(phys_device, &surface_loader, surface);
-        let surface_resolution = choose_swapchain_extent(window, &surface_capabilities);
+        let swapchain_format = choose_swapchain_format(phys_device, &surface_loader, surface);
+        let swapchain_extent = choose_swapchain_extent(window, &surface_capabilities);
         let swapchain_loader = Swapchain::new(&instance, &device);
         let swapchain = create_swapchain(
             phys_device,
             surface,
             &surface_loader,
             &surface_capabilities,
-            surface_format,
-            surface_resolution,
+            swapchain_format,
+            swapchain_extent,
             &swapchain_loader,
             &phys_device_info.queue_family_indices,
         );
         let swapchain_images = get_swapchain_images(&swapchain_loader, swapchain);
-        let swapchain_image_views = create_image_views(&device, surface_format, &swapchain_images);
+        let swapchain_image_views = create_image_views(&device, swapchain_format, &swapchain_images);
         let command_pool = create_command_pool(&device, gfx_queue_idx, true);
         let command_buffers =
-            create_command_buffers(&device, command_pool, FRAMES_IN_FLIGHT as u32);
-        let render_pass = create_render_pass(&device, surface_format.format);
+            create_command_buffers(&device, command_pool, FRAMES_IN_FLIGHT.try_into().unwrap());
+        let render_pass = create_render_pass(&device, swapchain_format.format);
         let pipeline_layout = create_pipeline_layout(&device);
         let pipeline =
-            create_graphics_pipeline(&device, surface_resolution, render_pass, pipeline_layout);
+            create_graphics_pipeline(&device, swapchain_extent, render_pass, pipeline_layout);
         let framebuffers =
-            create_framebuffers(&device, &swapchain_image_views, surface_resolution, render_pass);
+            create_framebuffers(&device, &swapchain_image_views, swapchain_extent, render_pass);
 
         let device_mem_properties = instance.get_physical_device_memory_properties(phys_device);
 
@@ -165,21 +162,18 @@ impl Renderer {
             &indices,
         );
 
-        let index_count = indices.len() as u32;
+        let index_count = indices.len().try_into().unwrap();
 
         let (image_available, render_finished, is_rendering) = create_sync_objects(&device);
 
         Self {
-            entry,
             instance,
             surface_loader,
             surface,
-            surface_format,
-            surface_resolution,
-            phys_device,
             device,
             graphics_queue,
             present_queue,
+            swapchain_extent,
             swapchain_loader,
             swapchain,
             swapchain_image_views,
@@ -223,7 +217,7 @@ impl Renderer {
             framebuffer,
             render_area: vk::Rect2D {
                 offset: vk::Offset2D { x: 0, y: 0 },
-                extent: self.surface_resolution,
+                extent: self.swapchain_extent,
             },
             clear_value_count: 1,
             p_clear_values: &clear_color,
@@ -740,8 +734,8 @@ fn create_swapchain(
     surface: vk::SurfaceKHR,
     surface_loader: &Surface,
     surface_capabilities: &vk::SurfaceCapabilitiesKHR,
-    surface_format: vk::SurfaceFormatKHR,
-    surface_resolution: vk::Extent2D,
+    swapchain_format: vk::SurfaceFormatKHR,
+    swapchain_extent: vk::Extent2D,
     swapchain_loader: &Swapchain,
     queue_family_indices: &QueueFamilyIndices,
 ) -> vk::SwapchainKHR {
@@ -768,9 +762,9 @@ fn create_swapchain(
         s_type: vk::StructureType::SWAPCHAIN_CREATE_INFO_KHR,
         surface,
         min_image_count: image_count,
-        image_color_space: surface_format.color_space,
-        image_format: surface_format.format,
-        image_extent: surface_resolution,
+        image_color_space: swapchain_format.color_space,
+        image_format: swapchain_format.format,
+        image_extent: swapchain_extent,
         image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT,
         image_sharing_mode,
         p_queue_family_indices: queue_family_indices.as_ptr(),
@@ -855,13 +849,13 @@ unsafe fn get_swapchain_images(
 
 fn create_image_views(
     device: &ash::Device,
-    surface_format: vk::SurfaceFormatKHR,
+    swapchain_format: vk::SurfaceFormatKHR,
     images: &[vk::Image],
 ) -> Vec<vk::ImageView> {
     images
         .iter()
         .map(|&image| {
-            create_image_view(device, image, surface_format.format, vk::ImageAspectFlags::COLOR, 1)
+            create_image_view(device, image, swapchain_format.format, vk::ImageAspectFlags::COLOR, 1)
         })
         .collect()
 }
@@ -901,10 +895,10 @@ fn create_image_view(
     unsafe { device.create_image_view(&create_info, None) }.check_err("create image view")
 }
 
-fn create_render_pass(device: &ash::Device, surface_format: vk::Format) -> vk::RenderPass {
+fn create_render_pass(device: &ash::Device, swapchain_format: vk::Format) -> vk::RenderPass {
     let color_attachment = vk::AttachmentDescription {
         flags: vk::AttachmentDescriptionFlags::empty(),
-        format: surface_format,
+        format: swapchain_format,
         samples: vk::SampleCountFlags::TYPE_1,
         load_op: vk::AttachmentLoadOp::CLEAR,
         store_op: vk::AttachmentStoreOp::STORE,
@@ -1286,7 +1280,7 @@ fn find_memory_type(
             continue;
         }
 
-        return Some(i as u32);
+        return Some(i.try_into().unwrap());
     }
 
     None
