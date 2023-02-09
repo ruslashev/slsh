@@ -76,10 +76,9 @@ struct PhysDeviceInfo {
     phys_device: vk::PhysicalDevice,
     properties: vk::PhysicalDeviceProperties,
     queue_family_indices: QueueFamilyIndices,
-    extensions: Vec<vk::ExtensionProperties>,
 }
 
-#[repr(C, packed)]
+#[repr(C)]
 #[derive(Clone, Debug, Copy)]
 struct Vertex {
     pos: [f32; 2],
@@ -111,10 +110,11 @@ impl Renderer {
             surface_format,
             surface_resolution,
             &swapchain_loader,
+            &phys_device_info.queue_family_indices,
         );
         let swapchain_images = get_swapchain_images(&swapchain_loader, swapchain);
         let swapchain_image_views = create_image_views(&device, surface_format, &swapchain_images);
-        let command_pool = create_command_pool(&device, gfx_queue_idx);
+        let command_pool = create_command_pool(&device, gfx_queue_idx, true);
         let command_buffers =
             create_command_buffers(&device, command_pool, FRAMES_IN_FLIGHT as u32);
         let render_pass = create_render_pass(&device, surface_format.format);
@@ -154,7 +154,7 @@ impl Renderer {
             &vertices,
         );
 
-        let indices = [0, 1, 2, 2, 3, 0];
+        let indices: [u16; 6] = [0, 1, 2, 2, 3, 0];
 
         let (index_buffer, index_buffer_memory) = create_buffer_of_type(
             &device,
@@ -389,7 +389,7 @@ impl Vertex {
     fn get_binding_desc() -> [vk::VertexInputBindingDescription; 1] {
         [vk::VertexInputBindingDescription {
             binding: 0,
-            stride: std::mem::size_of::<Vertex>() as u32,
+            stride: size_of::<Vertex>() as u32,
             input_rate: vk::VertexInputRate::VERTEX,
         }]
     }
@@ -446,12 +446,15 @@ fn create_instance(app_name: &'static str, entry: &ash::Entry, window: &Window) 
 
     let api_version = vk::make_api_version(0, API_VER_MAJOR, API_VER_MINOR, API_VER_PATCH);
 
-    let app_info = vk::ApplicationInfo::builder()
-        .application_name(app_cstr)
-        .application_version(0)
-        .engine_name(engine_name)
-        .engine_version(engine_version)
-        .api_version(api_version);
+    let app_info = vk::ApplicationInfo {
+        s_type: vk::StructureType::APPLICATION_INFO,
+        p_application_name: app_cstr.as_ptr(),
+        application_version: 0,
+        p_engine_name: engine_name.as_ptr(),
+        engine_version,
+        api_version,
+        ..Default::default()
+    };
 
     let req_layers_owned = convert_to_strings(REQ_VALIDATION_LAYERS);
     let req_layers_cstrs = convert_to_c_strs(&req_layers_owned);
@@ -469,17 +472,22 @@ fn create_instance(app_name: &'static str, entry: &ash::Entry, window: &Window) 
         req_exts_cptrs.push(vk::KhrGetPhysicalDeviceProperties2Fn::name().as_ptr());
     }
 
-    let create_flags = if cfg!(any(target_os = "macos", target_os = "ios")) {
+    let flags = if cfg!(any(target_os = "macos", target_os = "ios")) {
         vk::InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR
     } else {
         vk::InstanceCreateFlags::default()
     };
 
-    let create_info = vk::InstanceCreateInfo::builder()
-        .application_info(&app_info)
-        .enabled_layer_names(&req_layers_cptrs)
-        .enabled_extension_names(&req_exts_cptrs)
-        .flags(create_flags);
+    let create_info = vk::InstanceCreateInfo {
+        s_type: vk::StructureType::INSTANCE_CREATE_INFO,
+        p_application_info: &app_info,
+        enabled_layer_count: req_layers_cptrs.len() as u32,
+        pp_enabled_layer_names: req_layers_cptrs.as_ptr(),
+        enabled_extension_count: req_exts_cptrs.len() as u32,
+        pp_enabled_extension_names: req_exts_cptrs.as_ptr(),
+        flags,
+        ..Default::default()
+    };
 
     unsafe { entry.create_instance(&create_info, None) }.check_err("create instance")
 }
@@ -544,7 +552,6 @@ unsafe fn gather_phys_device_infos(
                 phys_device,
                 properties,
                 queue_family_indices,
-                extensions,
             };
 
             phys_device_infos.push(info);
@@ -593,15 +600,24 @@ fn choose_swapchain_format(
         unsafe { surface_loader.get_physical_device_surface_formats(phys_device, surface) }
             .check_err("get surface formats");
 
+    for format in &formats {
+        if format.format == vk::Format::B8G8R8A8_SRGB
+            && format.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
+        {
+            return format.clone();
+        }
+    }
+
     formats[0]
 }
 
-fn get_surface_capabilities(
+unsafe fn get_surface_capabilities(
     phys_device: vk::PhysicalDevice,
     surface_loader: &Surface,
     surface: vk::SurfaceKHR,
 ) -> vk::SurfaceCapabilitiesKHR {
-    unsafe { surface_loader.get_physical_device_surface_capabilities(phys_device, surface) }
+    surface_loader
+        .get_physical_device_surface_capabilities(phys_device, surface)
         .check_err("get surface capabilities")
 }
 
@@ -613,9 +629,15 @@ fn choose_swapchain_extent(
         return capabilities.current_extent;
     }
 
+    let win_width = window.width();
+    let win_height = window.height();
+
+    let min = capabilities.min_image_extent;
+    let max = capabilities.max_image_extent;
+
     vk::Extent2D {
-        width: window.width(),
-        height: window.height(),
+        width: win_width.clamp(min.width, max.width),
+        height: win_height.clamp(min.height, max.height),
     }
 }
 
@@ -689,6 +711,10 @@ fn create_logical_device(instance: &ash::Instance, info: &PhysDeviceInfo) -> ash
         ..Default::default()
     };
 
+    let req_layers_owned = convert_to_strings(REQ_VALIDATION_LAYERS);
+    let req_layers_cstrs = convert_to_c_strs(&req_layers_owned);
+    let req_layers_cptrs = convert_to_c_ptrs(&req_layers_cstrs);
+
     let req_exts_strings = convert_to_strings(REQ_DEVICE_EXTENSIONS);
     let req_exts_cstrings = convert_to_c_strs(&req_exts_strings);
     let req_exts_cptrs = convert_to_c_ptrs(&req_exts_cstrings);
@@ -697,6 +723,8 @@ fn create_logical_device(instance: &ash::Instance, info: &PhysDeviceInfo) -> ash
         s_type: vk::StructureType::DEVICE_CREATE_INFO,
         queue_create_info_count: queue_create_infos.len() as u32,
         p_queue_create_infos: queue_create_infos.as_ptr(),
+        enabled_layer_count: req_layers_cptrs.len() as u32,
+        pp_enabled_layer_names: req_layers_cptrs.as_ptr(),
         enabled_extension_count: req_exts_cptrs.len() as u32,
         pp_enabled_extension_names: req_exts_cptrs.as_ptr(),
         p_enabled_features: &features,
@@ -715,38 +743,45 @@ fn create_swapchain(
     surface_format: vk::SurfaceFormatKHR,
     surface_resolution: vk::Extent2D,
     swapchain_loader: &Swapchain,
+    queue_family_indices: &QueueFamilyIndices,
 ) -> vk::SwapchainKHR {
-    let max_image_count = surface_capabilities.max_image_count;
     let mut image_count = surface_capabilities.min_image_count + 1;
+    let max_image_count = surface_capabilities.max_image_count;
 
-    if image_count > max_image_count && max_image_count > 0 {
+    if image_count > max_image_count && max_image_count != 0 {
         image_count = max_image_count;
     }
 
-    let pre_transform = if surface_capabilities
-        .supported_transforms
-        .contains(vk::SurfaceTransformFlagsKHR::IDENTITY)
-    {
-        vk::SurfaceTransformFlagsKHR::IDENTITY
-    } else {
-        surface_capabilities.current_transform
-    };
-
     let present_mode = choose_swapchain_present_mode(phys_device, surface, surface_loader);
 
-    let create_info = vk::SwapchainCreateInfoKHR::builder()
-        .surface(surface)
-        .min_image_count(image_count)
-        .image_color_space(surface_format.color_space)
-        .image_format(surface_format.format)
-        .image_extent(surface_resolution)
-        .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
-        .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
-        .pre_transform(pre_transform)
-        .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
-        .present_mode(present_mode)
-        .clipped(true)
-        .image_array_layers(1);
+    let gfx_queue_idx = queue_family_indices.graphics.unwrap();
+    let present_queue_idx = queue_family_indices.present.unwrap();
+
+    let (image_sharing_mode, queue_family_index_count, queue_family_indices) =
+        if gfx_queue_idx != present_queue_idx {
+            (vk::SharingMode::CONCURRENT, 2, vec![gfx_queue_idx, present_queue_idx])
+        } else {
+            (vk::SharingMode::EXCLUSIVE, 0, vec![])
+        };
+
+    let create_info = vk::SwapchainCreateInfoKHR {
+        s_type: vk::StructureType::SWAPCHAIN_CREATE_INFO_KHR,
+        surface,
+        min_image_count: image_count,
+        image_color_space: surface_format.color_space,
+        image_format: surface_format.format,
+        image_extent: surface_resolution,
+        image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT,
+        image_sharing_mode,
+        p_queue_family_indices: queue_family_indices.as_ptr(),
+        queue_family_index_count,
+        pre_transform: surface_capabilities.current_transform,
+        composite_alpha: vk::CompositeAlphaFlagsKHR::OPAQUE,
+        present_mode,
+        clipped: vk::TRUE,
+        image_array_layers: 1,
+        ..Default::default()
+    };
 
     unsafe { swapchain_loader.create_swapchain(&create_info, None) }.check_err("create swapchain")
 }
@@ -774,32 +809,48 @@ fn present_mode_to_priority(mode: vk::PresentModeKHR) -> u32 {
     }
 }
 
-fn create_command_pool(device: &ash::Device, queue_family_idx: u32) -> vk::CommandPool {
-    let create_info = vk::CommandPoolCreateInfo::builder()
-        .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
-        .queue_family_index(queue_family_idx);
+fn create_command_pool(
+    device: &ash::Device,
+    queue_family_index: u32,
+    reset: bool,
+) -> vk::CommandPool {
+    let flags = if reset {
+        vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER
+    } else {
+        vk::CommandPoolCreateFlags::empty()
+    };
+
+    let create_info = vk::CommandPoolCreateInfo {
+        s_type: vk::StructureType::COMMAND_POOL_CREATE_INFO,
+        flags,
+        queue_family_index,
+        ..Default::default()
+    };
 
     unsafe { device.create_command_pool(&create_info, None) }.check_err("create command pool")
 }
 
 fn create_command_buffers(
     device: &ash::Device,
-    pool: vk::CommandPool,
+    command_pool: vk::CommandPool,
     num: u32,
 ) -> Vec<vk::CommandBuffer> {
-    let allocate_info = vk::CommandBufferAllocateInfo::builder()
-        .command_buffer_count(num)
-        .command_pool(pool)
-        .level(vk::CommandBufferLevel::PRIMARY);
+    let allocate_info = vk::CommandBufferAllocateInfo {
+        s_type: vk::StructureType::COMMAND_BUFFER_ALLOCATE_INFO,
+        command_pool,
+        level: vk::CommandBufferLevel::PRIMARY,
+        command_buffer_count: num,
+        ..Default::default()
+    };
 
     unsafe { device.allocate_command_buffers(&allocate_info) }.check_err("allocate command buffers")
 }
 
-fn get_swapchain_images(
+unsafe fn get_swapchain_images(
     swapchain_loader: &Swapchain,
     swapchain: vk::SwapchainKHR,
 ) -> Vec<vk::Image> {
-    unsafe { swapchain_loader.get_swapchain_images(swapchain) }.check_err("get swapchain images")
+    swapchain_loader.get_swapchain_images(swapchain).check_err("get swapchain images")
 }
 
 fn create_image_views(
@@ -852,8 +903,8 @@ fn create_image_view(
 
 fn create_render_pass(device: &ash::Device, surface_format: vk::Format) -> vk::RenderPass {
     let color_attachment = vk::AttachmentDescription {
-        format: surface_format,
         flags: vk::AttachmentDescriptionFlags::empty(),
+        format: surface_format,
         samples: vk::SampleCountFlags::TYPE_1,
         load_op: vk::AttachmentLoadOp::CLEAR,
         store_op: vk::AttachmentStoreOp::STORE,
@@ -887,14 +938,13 @@ fn create_render_pass(device: &ash::Device, surface_format: vk::Format) -> vk::R
 
     let create_info = vk::RenderPassCreateInfo {
         s_type: vk::StructureType::RENDER_PASS_CREATE_INFO,
-        flags: vk::RenderPassCreateFlags::empty(),
-        p_next: ptr::null(),
         attachment_count: 1,
         p_attachments: &color_attachment,
         subpass_count: 1,
         p_subpasses: &subpass,
         dependency_count: 1,
         p_dependencies: &subpass_dependency,
+        ..Default::default()
     };
 
     unsafe { device.create_render_pass(&create_info, None) }.check_err("create render pass")
@@ -1204,14 +1254,14 @@ unsafe fn create_buffer(
 
     let mem_requirements = device.get_buffer_memory_requirements(buffer);
 
-    let memory_type =
+    let memory_type_index =
         find_memory_type(mem_requirements.memory_type_bits, properties, device_mem_properties)
             .check_err("find appropriate memory type");
 
     let alloc_info = vk::MemoryAllocateInfo {
         s_type: vk::StructureType::MEMORY_ALLOCATE_INFO,
         allocation_size: mem_requirements.size,
-        memory_type_index: memory_type,
+        memory_type_index,
         ..Default::default()
     };
 
@@ -1319,7 +1369,7 @@ fn create_sync_objects(
     for _ in 0..FRAMES_IN_FLIGHT {
         image_available.push(create_semaphore(device));
         render_finished.push(create_semaphore(device));
-        is_rendering.push(create_fence(device));
+        is_rendering.push(create_fence(device, true));
     }
 
     (image_available, render_finished, is_rendering)
@@ -1334,9 +1384,16 @@ fn create_semaphore(device: &ash::Device) -> vk::Semaphore {
     unsafe { device.create_semaphore(&create_info, None) }.check_err("create semaphore")
 }
 
-fn create_fence(device: &ash::Device) -> vk::Fence {
+fn create_fence(device: &ash::Device, signaled: bool) -> vk::Fence {
+    let flags = if signaled {
+        vk::FenceCreateFlags::SIGNALED
+    } else {
+        vk::FenceCreateFlags::empty()
+    };
+
     let create_info = vk::FenceCreateInfo {
         s_type: vk::StructureType::FENCE_CREATE_INFO,
+        flags,
         ..Default::default()
     };
 

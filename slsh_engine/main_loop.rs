@@ -24,7 +24,7 @@ impl MainLoop {
         let dt = 1.0 / f64::from(updates_per_second);
 
         let mut current_time = self.window.current_time_ms();
-        let mut minimized = false;
+        let minimized = false;
 
         while self.running {
             if minimized {
