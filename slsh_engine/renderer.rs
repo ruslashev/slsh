@@ -313,14 +313,21 @@ impl Renderer {
     }
 
     pub fn present(&mut self) {
+        let command_buffer = self.command_buffers[self.current_frame];
+        let image_index = self.begin_frame();
+
+        self.record_commands_to_buffer(command_buffer, self.framebuffers[image_index as usize]);
+
+        self.end_frame(image_index);
+    }
+
+    fn begin_frame(&mut self) -> u32 {
         let timeout = u64::MAX;
 
-        let command_buffer = self.command_buffers[self.current_frame];
         let image_available = self.image_available[self.current_frame];
-        let render_finished = self.render_finished[self.current_frame];
         let is_rendering = self.is_rendering[self.current_frame];
 
-        let image_index = unsafe {
+        unsafe {
             self.device
                 .wait_for_fences(&[is_rendering], true, timeout)
                 .check_err("wait for fences");
@@ -338,9 +345,14 @@ impl Renderer {
             self.device.reset_fences(&[is_rendering]).check_err("reset fences");
 
             image_index
-        };
+        }
+    }
 
-        self.record_commands_to_buffer(command_buffer, self.framebuffers[image_index as usize]);
+    fn end_frame(&mut self, image_index: u32) {
+        let command_buffer = self.command_buffers[self.current_frame];
+        let image_available = self.image_available[self.current_frame];
+        let render_finished = self.render_finished[self.current_frame];
+        let is_rendering = self.is_rendering[self.current_frame];
 
         let submit_info = vk::SubmitInfo {
             s_type: vk::StructureType::SUBMIT_INFO,
