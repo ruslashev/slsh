@@ -97,8 +97,8 @@ impl Window {
         unsafe { surface.assume_init() }
     }
 
-    pub fn current_time_ms(&self) -> f64 {
-        self.glfw.get_time() / 1000.0
+    pub fn current_time(&self) -> f64 {
+        self.glfw.get_time()
     }
 
     pub fn block_until_event(&mut self) {

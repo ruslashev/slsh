@@ -23,7 +23,7 @@ impl MainLoop {
         let updates_per_second: i16 = 60;
         let dt = 1.0 / f64::from(updates_per_second);
 
-        let mut current_time = self.window.current_time_ms();
+        let mut current_time = self.window.current_time();
         let minimized = false;
 
         while self.running {
@@ -31,7 +31,7 @@ impl MainLoop {
                 self.window.block_until_event();
             }
 
-            let real_time = self.window.current_time_ms();
+            let real_time = self.window.current_time();
 
             while current_time < real_time {
                 current_time += dt;
