@@ -48,24 +48,24 @@ pub struct Renderer {
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
     render_pass: vk::RenderPass,
+    framebuffers: Vec<vk::Framebuffer>,
+    image_available: Vec<vk::Semaphore>,
+    render_finished: Vec<vk::Semaphore>,
+    is_rendering: Vec<vk::Fence>,
     desc_set_layout: vk::DescriptorSetLayout,
     desc_pool: vk::DescriptorPool,
     desc_sets: Vec<vk::DescriptorSet>,
-    pipeline_layout: vk::PipelineLayout,
-    pipeline: vk::Pipeline,
-    framebuffers: Vec<vk::Framebuffer>,
+    uniform_buffers: Vec<vk::Buffer>,
+    uniform_buffers_memories: Vec<vk::DeviceMemory>,
+    uniform_buffers_mappings: Vec<*mut UniformBufferObject>,
+    uniform_buffer_object: UniformBufferObject,
     vertex_buffer: vk::Buffer,
     vertex_buffer_memory: vk::DeviceMemory,
     index_buffer: vk::Buffer,
     index_buffer_memory: vk::DeviceMemory,
     index_count: u32,
-    uniform_buffers: Vec<vk::Buffer>,
-    uniform_buffers_memories: Vec<vk::DeviceMemory>,
-    uniform_buffers_mappings: Vec<*mut UniformBufferObject>,
-    uniform_buffer_object: UniformBufferObject,
-    image_available: Vec<vk::Semaphore>,
-    render_finished: Vec<vk::Semaphore>,
-    is_rendering: Vec<vk::Fence>,
+    pipeline_layout: vk::PipelineLayout,
+    pipeline: vk::Pipeline,
     current_frame: usize,
     current_time: f64,
 }
@@ -105,6 +105,7 @@ impl Renderer {
         let surface = window.create_surface(&instance);
         let phys_device_info = pick_phys_device(&instance, surface, &surface_loader);
         let phys_device = phys_device_info.phys_device;
+        let device_mem_properties = instance.get_physical_device_memory_properties(phys_device);
         let device = create_logical_device(&instance, &phys_device_info);
         let gfx_queue_idx = phys_device_info.queue_family_indices.graphics.unwrap();
         let present_queue_idx = phys_device_info.queue_family_indices.present.unwrap();
@@ -131,36 +132,13 @@ impl Renderer {
         let command_buffers =
             create_command_buffers(&device, command_pool, FRAMES_IN_FLIGHT.try_into().unwrap());
         let render_pass = create_render_pass(&device, swapchain_format.format);
-        let desc_set_layout = create_desc_set_layout(&device);
-        let pipeline_layout = create_pipeline_layout(&device, &desc_set_layout);
-        let pipeline =
-            create_graphics_pipeline(&device, swapchain_extent, render_pass, pipeline_layout);
         let framebuffers =
             create_framebuffers(&device, &swapchain_image_views, swapchain_extent, render_pass);
+        let (image_available, render_finished, is_rendering) = create_sync_objects(&device);
 
-        let device_mem_properties = instance.get_physical_device_memory_properties(phys_device);
-
-        let mesh = create_grid_mesh(2.0, 32);
-
-        let (vertex_buffer, vertex_buffer_memory) = create_buffer_of_type(
-            &device,
-            &device_mem_properties,
-            command_pool,
-            graphics_queue,
-            vk::BufferUsageFlags::VERTEX_BUFFER,
-            &mesh.vertices,
-        );
-
-        let (index_buffer, index_buffer_memory) = create_buffer_of_type(
-            &device,
-            &device_mem_properties,
-            command_pool,
-            graphics_queue,
-            vk::BufferUsageFlags::INDEX_BUFFER,
-            &mesh.indices,
-        );
-
-        let index_count = mesh.indices.len().try_into().unwrap();
+        let desc_set_layout = create_desc_set_layout(&device);
+        let desc_pool = create_desc_pool(&device);
+        let desc_sets = create_desc_sets(&device, desc_set_layout, desc_pool);
 
         let (uniform_buffers, uniform_buffers_memories, uniform_buffers_mappings) =
             create_uniform_buffers(&device, &device_mem_properties);
@@ -171,12 +149,33 @@ impl Renderer {
             proj: Mat4::IDENTITY,
         };
 
-        let desc_pool = create_desc_pool(&device);
-        let desc_sets = create_desc_sets(&device, desc_set_layout, desc_pool);
-
         fill_desc_sets(&device, &uniform_buffers, &desc_sets);
 
-        let (image_available, render_finished, is_rendering) = create_sync_objects(&device);
+        let grid = create_grid_mesh(2.0, 32);
+
+        let (vertex_buffer, vertex_buffer_memory) = create_buffer_of_type(
+            &device,
+            &device_mem_properties,
+            command_pool,
+            graphics_queue,
+            vk::BufferUsageFlags::VERTEX_BUFFER,
+            &grid.vertices,
+        );
+
+        let (index_buffer, index_buffer_memory) = create_buffer_of_type(
+            &device,
+            &device_mem_properties,
+            command_pool,
+            graphics_queue,
+            vk::BufferUsageFlags::INDEX_BUFFER,
+            &grid.indices,
+        );
+
+        let index_count = grid.indices.len().try_into().unwrap();
+
+        let pipeline_layout = create_pipeline_layout(&device, &desc_set_layout);
+        let pipeline =
+            create_graphics_pipeline(&device, swapchain_extent, render_pass, pipeline_layout);
 
         Self {
             instance,
@@ -192,24 +191,24 @@ impl Renderer {
             command_pool,
             command_buffers,
             render_pass,
+            framebuffers,
+            image_available,
+            render_finished,
+            is_rendering,
             desc_set_layout,
             desc_pool,
             desc_sets,
-            pipeline_layout,
-            pipeline,
-            framebuffers,
+            uniform_buffers,
+            uniform_buffers_memories,
+            uniform_buffers_mappings,
+            uniform_buffer_object,
             vertex_buffer,
             vertex_buffer_memory,
             index_buffer,
             index_buffer_memory,
             index_count,
-            uniform_buffers,
-            uniform_buffers_memories,
-            uniform_buffers_mappings,
-            uniform_buffer_object,
-            image_available,
-            render_finished,
-            is_rendering,
+            pipeline_layout,
+            pipeline,
             current_frame: 0,
             current_time: 0.0,
         }
