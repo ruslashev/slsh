@@ -9,3 +9,4 @@ path = "lib.rs"
 [dependencies]
 ash = { version = "0.37.0", default-features = false, features = ["linked"] }
 glfw = { version = "0.50.0", features = ["vulkan"] }
+glam = "0.22.0"

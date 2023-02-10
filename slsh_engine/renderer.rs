@@ -7,6 +7,7 @@ use std::str::FromStr;
 
 use ash::extensions::khr::{Surface, Swapchain};
 use ash::vk;
+use glam::{Mat4, Vec3};
 
 use crate::window::Window;
 
@@ -46,6 +47,9 @@ pub struct Renderer {
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
     render_pass: vk::RenderPass,
+    desc_set_layout: vk::DescriptorSetLayout,
+    desc_pool: vk::DescriptorPool,
+    desc_sets: Vec<vk::DescriptorSet>,
     pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
     framebuffers: Vec<vk::Framebuffer>,
@@ -54,10 +58,14 @@ pub struct Renderer {
     index_buffer: vk::Buffer,
     index_buffer_memory: vk::DeviceMemory,
     index_count: u32,
+    uniform_buffers: Vec<vk::Buffer>,
+    uniform_buffers_memories: Vec<vk::DeviceMemory>,
+    uniform_buffers_mappings: Vec<*mut UniformBufferObject>,
     image_available: Vec<vk::Semaphore>,
     render_finished: Vec<vk::Semaphore>,
     is_rendering: Vec<vk::Fence>,
     current_frame: usize,
+    current_time: f64,
 }
 
 #[derive(Default, Clone)]
@@ -80,6 +88,13 @@ struct PhysDeviceInfo {
 struct Vertex {
     pos: [f32; 2],
     color: [f32; 3],
+}
+
+#[repr(C)]
+struct UniformBufferObject {
+    model: Mat4,
+    view: Mat4,
+    proj: Mat4,
 }
 
 impl Renderer {
@@ -110,12 +125,14 @@ impl Renderer {
             &phys_device_info.queue_family_indices,
         );
         let swapchain_images = get_swapchain_images(&swapchain_loader, swapchain);
-        let swapchain_image_views = create_image_views(&device, swapchain_format, &swapchain_images);
+        let swapchain_image_views =
+            create_image_views(&device, swapchain_format, &swapchain_images);
         let command_pool = create_command_pool(&device, gfx_queue_idx, true);
         let command_buffers =
             create_command_buffers(&device, command_pool, FRAMES_IN_FLIGHT.try_into().unwrap());
         let render_pass = create_render_pass(&device, swapchain_format.format);
-        let pipeline_layout = create_pipeline_layout(&device);
+        let desc_set_layout = create_desc_set_layout(&device);
+        let pipeline_layout = create_pipeline_layout(&device, &desc_set_layout);
         let pipeline =
             create_graphics_pipeline(&device, swapchain_extent, render_pass, pipeline_layout);
         let framebuffers =
@@ -164,6 +181,14 @@ impl Renderer {
 
         let index_count = indices.len().try_into().unwrap();
 
+        let (uniform_buffers, uniform_buffers_memories, uniform_buffers_mappings) =
+            create_uniform_buffers(&device, &device_mem_properties);
+
+        let desc_pool = create_desc_pool(&device);
+        let desc_sets = create_desc_sets(&device, desc_set_layout, desc_pool);
+
+        fill_desc_sets(&device, &uniform_buffers, &desc_sets);
+
         let (image_available, render_finished, is_rendering) = create_sync_objects(&device);
 
         Self {
@@ -180,6 +205,9 @@ impl Renderer {
             command_pool,
             command_buffers,
             render_pass,
+            desc_set_layout,
+            desc_pool,
+            desc_sets,
             pipeline_layout,
             pipeline,
             framebuffers,
@@ -188,10 +216,14 @@ impl Renderer {
             index_buffer,
             index_buffer_memory,
             index_count,
+            uniform_buffers,
+            uniform_buffers_memories,
+            uniform_buffers_mappings,
             image_available,
             render_finished,
             is_rendering,
             current_frame: 0,
+            current_time: 0.0,
         }
     }
 
@@ -254,6 +286,15 @@ impl Renderer {
                 vk::IndexType::UINT16,
             );
 
+            self.device.cmd_bind_descriptor_sets(
+                cmd_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pipeline_layout,
+                0,
+                &[self.desc_sets[self.current_frame]],
+                &[],
+            );
+
             self.device.cmd_draw_indexed(cmd_buffer, self.index_count, 1, 0, 0, 0);
 
             self.device.cmd_end_render_pass(cmd_buffer);
@@ -289,6 +330,8 @@ impl Renderer {
 
             image_index
         };
+
+        self.update_uniform_buffer();
 
         self.record_commands_to_buffer(command_buffer, self.framebuffers[image_index as usize]);
 
@@ -329,6 +372,29 @@ impl Renderer {
         self.current_frame = (self.current_frame + 1) % FRAMES_IN_FLIGHT;
     }
 
+    fn update_uniform_buffer(&self) {
+        let model = Mat4::from_rotation_z((self.current_time as f32) * 90.0_f32.to_radians());
+        let view = Mat4::look_at_rh(
+            Vec3::new(2.0, 2.0, 2.0),
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+        );
+        let aspect_ratio = self.swapchain_extent.width as f32 / self.swapchain_extent.height as f32;
+        let mut proj = Mat4::perspective_rh(45.0_f32.to_radians(), aspect_ratio, 0.1, 10.0);
+
+        proj.y_axis.y *= -1.0;
+
+        let ubo = UniformBufferObject { model, view, proj };
+
+        unsafe {
+            self.uniform_buffers_mappings[self.current_frame].copy_from_nonoverlapping(&ubo, 1);
+        }
+    }
+
+    pub fn update(&mut self, _dt: f64, t: f64) {
+        self.current_time = t;
+    }
+
     unsafe fn cleanup_swapchain(&self) {
         self.device.device_wait_idle().unwrap();
 
@@ -366,6 +432,16 @@ impl Drop for Renderer {
 
             self.cleanup_swapchain();
 
+            for buf in &self.uniform_buffers {
+                self.device.destroy_buffer(*buf, None);
+            }
+
+            for mem in &self.uniform_buffers_memories {
+                self.device.free_memory(*mem, None);
+            }
+
+            self.device.destroy_descriptor_pool(self.desc_pool, None);
+            self.device.destroy_descriptor_set_layout(self.desc_set_layout, None);
             self.device.destroy_buffer(self.index_buffer, None);
             self.device.free_memory(self.index_buffer_memory, None);
             self.device.destroy_buffer(self.vertex_buffer, None);
@@ -855,7 +931,13 @@ fn create_image_views(
     images
         .iter()
         .map(|&image| {
-            create_image_view(device, image, swapchain_format.format, vk::ImageAspectFlags::COLOR, 1)
+            create_image_view(
+                device,
+                image,
+                swapchain_format.format,
+                vk::ImageAspectFlags::COLOR,
+                1,
+            )
         })
         .collect()
 }
@@ -944,15 +1026,40 @@ fn create_render_pass(device: &ash::Device, swapchain_format: vk::Format) -> vk:
     unsafe { device.create_render_pass(&create_info, None) }.check_err("create render pass")
 }
 
-fn create_pipeline_layout(device: &ash::Device) -> vk::PipelineLayout {
+fn create_pipeline_layout(
+    device: &ash::Device,
+    desc_set_layout: &vk::DescriptorSetLayout,
+) -> vk::PipelineLayout {
     let create_info = vk::PipelineLayoutCreateInfo {
         s_type: vk::StructureType::PIPELINE_LAYOUT_CREATE_INFO,
         push_constant_range_count: 0,
         p_push_constant_ranges: ptr::null(),
+        set_layout_count: 1,
+        p_set_layouts: desc_set_layout,
         ..Default::default()
     };
 
     unsafe { device.create_pipeline_layout(&create_info, None) }.check_err("create pipeline layout")
+}
+
+fn create_desc_set_layout(device: &ash::Device) -> vk::DescriptorSetLayout {
+    let binding = vk::DescriptorSetLayoutBinding {
+        binding: 0,
+        descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+        descriptor_count: 1,
+        stage_flags: vk::ShaderStageFlags::VERTEX,
+        p_immutable_samplers: ptr::null(),
+    };
+
+    let create_info = vk::DescriptorSetLayoutCreateInfo {
+        s_type: vk::StructureType::DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        binding_count: 1,
+        p_bindings: &binding,
+        ..Default::default()
+    };
+
+    unsafe { device.create_descriptor_set_layout(&create_info, None) }
+        .check_err("create descriptor set layout")
 }
 
 fn create_graphics_pipeline(
@@ -1035,7 +1142,7 @@ fn create_graphics_pipeline(
         rasterizer_discard_enable: vk::FALSE,
         polygon_mode: vk::PolygonMode::FILL,
         cull_mode: vk::CullModeFlags::BACK,
-        front_face: vk::FrontFace::CLOCKWISE,
+        front_face: vk::FrontFace::COUNTER_CLOCKWISE,
         depth_bias_enable: vk::FALSE,
         line_width: 1.0,
         ..Default::default()
@@ -1351,6 +1458,104 @@ fn copy_buffers(
         device.queue_wait_idle(queue).check_err("wait for queue");
 
         device.free_command_buffers(command_pool, &[cmd_buffer]);
+    }
+}
+
+fn create_uniform_buffers(
+    device: &ash::Device,
+    device_mem_properties: &vk::PhysicalDeviceMemoryProperties,
+) -> (Vec<vk::Buffer>, Vec<vk::DeviceMemory>, Vec<*mut UniformBufferObject>) {
+    let mut uniform_buffers = Vec::with_capacity(FRAMES_IN_FLIGHT);
+    let mut uniform_buffers_memories = Vec::with_capacity(FRAMES_IN_FLIGHT);
+    let mut uniform_buffers_mappings = Vec::with_capacity(FRAMES_IN_FLIGHT);
+
+    let buf_size = size_of::<UniformBufferObject>() as u64;
+
+    for _ in 0..FRAMES_IN_FLIGHT {
+        unsafe {
+            let (buffer, memory) = create_buffer(
+                device,
+                device_mem_properties,
+                buf_size,
+                vk::BufferUsageFlags::UNIFORM_BUFFER,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            );
+            let mapping = device
+                .map_memory(memory, 0, buf_size, vk::MemoryMapFlags::empty())
+                .check_err("map memory")
+                .cast::<UniformBufferObject>();
+
+            uniform_buffers.push(buffer);
+            uniform_buffers_memories.push(memory);
+            uniform_buffers_mappings.push(mapping);
+        }
+    }
+
+    (uniform_buffers, uniform_buffers_memories, uniform_buffers_mappings)
+}
+
+fn create_desc_pool(device: &ash::Device) -> vk::DescriptorPool {
+    let pool_size = vk::DescriptorPoolSize {
+        ty: vk::DescriptorType::UNIFORM_BUFFER,
+        descriptor_count: FRAMES_IN_FLIGHT as u32,
+    };
+
+    let create_info = vk::DescriptorPoolCreateInfo {
+        s_type: vk::StructureType::DESCRIPTOR_POOL_CREATE_INFO,
+        max_sets: FRAMES_IN_FLIGHT as u32,
+        pool_size_count: 1,
+        p_pool_sizes: &pool_size,
+        ..Default::default()
+    };
+
+    unsafe { device.create_descriptor_pool(&create_info, None) }.check_err("create descriptor pool")
+}
+
+fn create_desc_sets(
+    device: &ash::Device,
+    desc_set_layout: vk::DescriptorSetLayout,
+    descriptor_pool: vk::DescriptorPool,
+) -> Vec<vk::DescriptorSet> {
+    let mut layouts = Vec::with_capacity(FRAMES_IN_FLIGHT);
+    layouts.resize(FRAMES_IN_FLIGHT, desc_set_layout);
+
+    let alloc_info = vk::DescriptorSetAllocateInfo {
+        s_type: vk::StructureType::DESCRIPTOR_SET_ALLOCATE_INFO,
+        descriptor_pool,
+        descriptor_set_count: FRAMES_IN_FLIGHT as u32,
+        p_set_layouts: layouts.as_ptr(),
+        ..Default::default()
+    };
+
+    unsafe { device.allocate_descriptor_sets(&alloc_info) }.check_err("allocate descriptor sets")
+}
+
+fn fill_desc_sets(
+    device: &ash::Device,
+    uniform_buffers: &[vk::Buffer],
+    desc_sets: &[vk::DescriptorSet],
+) {
+    for i in 0..FRAMES_IN_FLIGHT {
+        let buffer_info = vk::DescriptorBufferInfo {
+            buffer: uniform_buffers[i],
+            offset: 0,
+            range: size_of::<UniformBufferObject>() as u64,
+        };
+
+        let desc_write = vk::WriteDescriptorSet {
+            s_type: vk::StructureType::WRITE_DESCRIPTOR_SET,
+            dst_set: desc_sets[i],
+            dst_binding: 0,
+            dst_array_element: 0,
+            descriptor_count: 1,
+            descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+            p_buffer_info: &buffer_info,
+            ..Default::default()
+        };
+
+        unsafe {
+            device.update_descriptor_sets(&[desc_write], &[]);
+        }
     }
 }
 

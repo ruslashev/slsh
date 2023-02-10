@@ -35,7 +35,7 @@ impl MainLoop {
 
             while current_time < real_time {
                 current_time += dt;
-                // update(dt, current_time);
+                self.renderer.update(dt, current_time);
             }
 
             self.window.poll_events(|event| match event {
