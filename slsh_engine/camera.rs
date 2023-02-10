@@ -39,7 +39,7 @@ impl Camera {
             pitch_min: -PI / 2.0,
             pitch_max: PI / 2.0,
             aspect_ratio,
-            position: Vec3::new(0.0, 1.0, -2.0),
+            position: Vec3::new(0.0, 8.0, 0.0),
             proj: Mat4::IDENTITY,
             view: Mat4::IDENTITY,
             proj_needs_recalc: true,

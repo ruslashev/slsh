@@ -86,17 +86,15 @@ struct PhysDeviceInfo {
 }
 
 #[repr(C)]
-#[derive(Clone, Debug, Copy)]
-struct Vertex {
-    pos: [f32; 2],
-    color: [f32; 3],
-}
-
-#[repr(C)]
 struct UniformBufferObject {
     model: Mat4,
     view: Mat4,
     proj: Mat4,
+}
+
+struct Mesh {
+    vertices: Vec<f32>,
+    indices: Vec<u16>,
 }
 
 impl Renderer {
@@ -142,24 +140,7 @@ impl Renderer {
 
         let device_mem_properties = instance.get_physical_device_memory_properties(phys_device);
 
-        let vertices = [
-            Vertex {
-                pos: [-0.5, -0.5],
-                color: [1.0, 0.0, 0.0],
-            },
-            Vertex {
-                pos: [0.5, -0.5],
-                color: [0.0, 1.0, 0.0],
-            },
-            Vertex {
-                pos: [0.5, 0.5],
-                color: [0.0, 0.0, 1.0],
-            },
-            Vertex {
-                pos: [-0.5, 0.5],
-                color: [1.0, 1.0, 1.0],
-            },
-        ];
+        let mesh = create_grid_mesh(2.0, 32);
 
         let (vertex_buffer, vertex_buffer_memory) = create_buffer_of_type(
             &device,
@@ -167,10 +148,8 @@ impl Renderer {
             command_pool,
             graphics_queue,
             vk::BufferUsageFlags::VERTEX_BUFFER,
-            &vertices,
+            &mesh.vertices,
         );
-
-        let indices: [u16; 6] = [0, 1, 2, 2, 3, 0];
 
         let (index_buffer, index_buffer_memory) = create_buffer_of_type(
             &device,
@@ -178,10 +157,10 @@ impl Renderer {
             command_pool,
             graphics_queue,
             vk::BufferUsageFlags::INDEX_BUFFER,
-            &indices,
+            &mesh.indices,
         );
 
-        let index_count = indices.len().try_into().unwrap();
+        let index_count = mesh.indices.len().try_into().unwrap();
 
         let (uniform_buffers, uniform_buffers_memories, uniform_buffers_mappings) =
             create_uniform_buffers(&device, &device_mem_properties);
@@ -462,36 +441,6 @@ impl Drop for Renderer {
             self.surface_loader.destroy_surface(self.surface, None);
             self.instance.destroy_instance(None);
         }
-    }
-}
-
-impl Vertex {
-    fn get_binding_desc() -> [vk::VertexInputBindingDescription; 1] {
-        [vk::VertexInputBindingDescription {
-            binding: 0,
-            stride: size_of::<Vertex>() as u32,
-            input_rate: vk::VertexInputRate::VERTEX,
-        }]
-    }
-
-    fn get_attribute_desc() -> [vk::VertexInputAttributeDescription; 2] {
-        let pos_offset = 0;
-        let col_offset = 2 * size_of::<f32>() as u32;
-
-        [
-            vk::VertexInputAttributeDescription {
-                binding: 0,
-                location: 0,
-                format: vk::Format::R32G32_SFLOAT,
-                offset: pos_offset,
-            },
-            vk::VertexInputAttributeDescription {
-                binding: 0,
-                location: 1,
-                format: vk::Format::R32G32B32_SFLOAT,
-                offset: col_offset,
-            },
-        ]
     }
 }
 
@@ -1078,8 +1027,8 @@ fn create_graphics_pipeline(
     render_pass: vk::RenderPass,
     pipeline_layout: vk::PipelineLayout,
 ) -> vk::Pipeline {
-    let vert_compiled = include_shader!("triangle.vert");
-    let frag_compiled = include_shader!("triangle.frag");
+    let vert_compiled = include_shader!("grid.vert");
+    let frag_compiled = include_shader!("grid.frag");
 
     let vert_shader_mod = create_shader_module(device, vert_compiled);
     let frag_shader_mod = create_shader_module(device, frag_compiled);
@@ -1104,21 +1053,33 @@ fn create_graphics_pipeline(
 
     let shader_stages = [vert_shader_stage, frag_shader_stage];
 
-    let binding_desc = Vertex::get_binding_desc();
-    let attribute_desc = Vertex::get_attribute_desc();
+    let size_f32 = size_of::<f32>() as u32;
+
+    let binding_desc = vk::VertexInputBindingDescription {
+        binding: 0,
+        stride: size_f32 * 2,
+        input_rate: vk::VertexInputRate::VERTEX,
+    };
+
+    let attribute_desc = vk::VertexInputAttributeDescription {
+        binding: 0,
+        location: 0,
+        format: vk::Format::R32G32_SFLOAT,
+        offset: 0,
+    };
 
     let vertex_input_state = vk::PipelineVertexInputStateCreateInfo {
         s_type: vk::StructureType::PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-        vertex_binding_description_count: binding_desc.len() as u32,
-        p_vertex_binding_descriptions: binding_desc.as_ptr(),
-        vertex_attribute_description_count: attribute_desc.len() as u32,
-        p_vertex_attribute_descriptions: attribute_desc.as_ptr(),
+        vertex_binding_description_count: 1,
+        p_vertex_binding_descriptions: &binding_desc,
+        vertex_attribute_description_count: 1,
+        p_vertex_attribute_descriptions: &attribute_desc,
         ..Default::default()
     };
 
     let input_assembly_state = vk::PipelineInputAssemblyStateCreateInfo {
         s_type: vk::StructureType::PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-        topology: vk::PrimitiveTopology::TRIANGLE_LIST,
+        topology: vk::PrimitiveTopology::LINE_LIST,
         primitive_restart_enable: vk::FALSE,
         ..Default::default()
     };
@@ -1608,4 +1569,46 @@ fn create_fence(device: &ash::Device, signaled: bool) -> vk::Fence {
     };
 
     unsafe { device.create_fence(&create_info, None) }.check_err("create fence")
+}
+
+fn create_grid_mesh(res: f32, cells: usize) -> Mesh {
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+
+    let min = -(res * cells as f32);
+    let max = res * cells as f32;
+
+    let mut x_off = -(res * cells as f32);
+    let mut y_off = -(res * cells as f32);
+
+    let mut idx = 0;
+
+    for _ in 0..cells * 2 + 1 {
+        vertices.push(min);
+        vertices.push(y_off);
+        vertices.push(max);
+        vertices.push(y_off);
+
+        indices.push(idx);
+        indices.push(idx + 1);
+
+        idx += 2;
+        y_off += res;
+
+        vertices.push(x_off);
+        vertices.push(min);
+        vertices.push(x_off);
+        vertices.push(max);
+
+        indices.push(idx);
+        indices.push(idx + 1);
+
+        idx += 2;
+        x_off += res;
+    }
+
+    Mesh {
+        vertices,
+        indices,
+    }
 }
