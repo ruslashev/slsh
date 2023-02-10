@@ -21,6 +21,7 @@ pub enum Resolution {
 pub enum Event {
     KeyPress(Key),
     KeyRelease(Key),
+    MouseMove(f64, f64),
 }
 
 #[repr(i32)]
@@ -72,6 +73,15 @@ impl Window {
         assert!(glfw.vulkan_supported(), "Vulkan not supported");
 
         handle.set_key_polling(true);
+        handle.set_cursor_pos_polling(true);
+
+        handle.set_cursor_mode(glfw::CursorMode::Disabled);
+
+        if glfw.supports_raw_motion() {
+            handle.set_raw_mouse_motion(true);
+        } else {
+            println!("Raw mouse input not supported");
+        }
 
         Self {
             glfw,
@@ -135,6 +145,7 @@ impl Window {
                         handle_cb(event);
                     }
                 }
+                glfw::WindowEvent::CursorPos(x, y) => handle_cb(Event::MouseMove(x, y)),
                 _ => (),
             }
         }
