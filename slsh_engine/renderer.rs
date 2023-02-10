@@ -672,7 +672,7 @@ fn choose_swapchain_format(
         if format.format == vk::Format::B8G8R8A8_SRGB
             && format.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
         {
-            return format.clone();
+            return *format;
         }
     }
 
@@ -826,10 +826,10 @@ fn create_swapchain(
     let present_queue_idx = queue_family_indices.present.unwrap();
 
     let (image_sharing_mode, queue_family_index_count, queue_family_indices) =
-        if gfx_queue_idx != present_queue_idx {
-            (vk::SharingMode::CONCURRENT, 2, vec![gfx_queue_idx, present_queue_idx])
-        } else {
+        if gfx_queue_idx == present_queue_idx {
             (vk::SharingMode::EXCLUSIVE, 0, vec![])
+        } else {
+            (vk::SharingMode::CONCURRENT, 2, vec![gfx_queue_idx, present_queue_idx])
         };
 
     let create_info = vk::SwapchainCreateInfoKHR {
