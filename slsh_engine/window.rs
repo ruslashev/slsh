@@ -36,6 +36,7 @@ impl Window {
 
         glfw.window_hint(glfw::WindowHint::Visible(true));
         glfw.window_hint(glfw::WindowHint::ClientApi(glfw::ClientApiHint::NoApi));
+        glfw.window_hint(glfw::WindowHint::CenterCursor(true));
 
         let (width, height, create_result) = match *res {
             Resolution::Windowed(width, height) => {
@@ -71,6 +72,8 @@ impl Window {
         let (mut handle, events) = create_result.expect("Failed to create GLFW window");
 
         assert!(glfw.vulkan_supported(), "Vulkan not supported");
+
+        center_window(res, &mut glfw, &mut handle);
 
         handle.set_key_polling(true);
         handle.set_cursor_pos_polling(true);
@@ -162,5 +165,24 @@ impl Key {
             glfw::Key::Escape => Key::Escape,
             _ => Key::Unknown,
         }
+    }
+}
+
+fn center_window(res: &Resolution, glfw: &mut glfw::Glfw, handle: &mut glfw::Window) {
+    if let Resolution::Windowed(win_width, win_height) = *res {
+        glfw.with_primary_monitor(|_, monitor| {
+            let monitor = monitor.expect("No monitors found");
+            let mode = monitor.get_video_mode().expect("Failed to get video mode");
+            let scr_width = mode.width as i32;
+            let scr_height = mode.height as i32;
+
+            let win_width = win_width as i32;
+            let win_height = win_height as i32;
+
+            let win_x = scr_width / 2 - win_width / 2;
+            let win_y = scr_height / 2 - win_height / 2;
+
+            handle.set_pos(win_x, win_y);
+        })
     }
 }
