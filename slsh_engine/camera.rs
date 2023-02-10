@@ -30,8 +30,8 @@ pub struct Camera {
 impl Camera {
     pub fn new(aspect_ratio: f32) -> Self {
         Self {
-            fov: 60.0_f32.to_radians(),
-            near: 0.1,
+            fov: 70.0_f32.to_radians(),
+            near: 0.05,
             far: 100.0,
             pitch: 0.0,
             yaw: 0.0,
@@ -39,7 +39,7 @@ impl Camera {
             pitch_min: -PI / 2.0,
             pitch_max: PI / 2.0,
             aspect_ratio,
-            position: Vec3::new(2.0, 2.0, 2.0),
+            position: Vec3::new(0.0, 1.0, -2.0),
             proj: Mat4::IDENTITY,
             view: Mat4::IDENTITY,
             proj_needs_recalc: true,
@@ -81,16 +81,16 @@ impl Camera {
 
     fn recalc_view_matrix(&mut self) {
         self.view = Mat4::IDENTITY
-            * Mat4::from_rotation_x(self.pitch)
-            * Mat4::from_rotation_y(self.yaw)
-            * Mat4::from_rotation_z(self.roll)
+            * Mat4::from_rotation_x(-self.pitch)
+            * Mat4::from_rotation_y(-self.yaw)
+            * Mat4::from_rotation_z(-self.roll)
             * Mat4::from_translation(-self.position);
 
         self.view_needs_recalc = false;
     }
 
     fn recalc_proj_matrix(&mut self) {
-        self.proj = Mat4::perspective_rh(self.fov, self.aspect_ratio, self.near, self.far);
+        self.proj = Mat4::perspective_lh(self.fov, self.aspect_ratio, self.near, self.far);
         self.proj.y_axis.y *= -1.0;
 
         self.proj_needs_recalc = false;
