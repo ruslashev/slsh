@@ -6,6 +6,8 @@
     clippy::uninlined_format_args
 )]
 
+pub mod camera;
+pub mod input;
 pub mod main_loop;
 pub mod renderer;
 pub mod window;

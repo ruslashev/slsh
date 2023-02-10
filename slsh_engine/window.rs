@@ -119,16 +119,20 @@ impl Window {
         self.handle.set_title(title);
     }
 
+    pub fn mouse_pos(&self) -> (f64, f64) {
+        self.handle.get_cursor_pos()
+    }
+
+    pub fn should_close(&self) -> bool {
+        self.handle.should_close()
+    }
+
     pub fn width(&self) -> u32 {
         self.width
     }
 
     pub fn height(&self) -> u32 {
         self.height
-    }
-
-    pub fn should_close(&self) -> bool {
-        self.handle.should_close()
     }
 
     pub fn poll_events(&mut self, mut handle_cb: impl FnMut(Event)) {

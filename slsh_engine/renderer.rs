@@ -7,8 +7,9 @@ use std::str::FromStr;
 
 use ash::extensions::khr::{Surface, Swapchain};
 use ash::vk;
-use glam::{Mat4, Vec3};
+use glam::Mat4;
 
+use crate::camera::Camera;
 use crate::window::Window;
 
 macro_rules! include_shader {
@@ -61,6 +62,7 @@ pub struct Renderer {
     uniform_buffers: Vec<vk::Buffer>,
     uniform_buffers_memories: Vec<vk::DeviceMemory>,
     uniform_buffers_mappings: Vec<*mut UniformBufferObject>,
+    uniform_buffer_object: UniformBufferObject,
     image_available: Vec<vk::Semaphore>,
     render_finished: Vec<vk::Semaphore>,
     is_rendering: Vec<vk::Fence>,
@@ -184,6 +186,12 @@ impl Renderer {
         let (uniform_buffers, uniform_buffers_memories, uniform_buffers_mappings) =
             create_uniform_buffers(&device, &device_mem_properties);
 
+        let uniform_buffer_object = UniformBufferObject {
+            model: Mat4::IDENTITY,
+            view: Mat4::IDENTITY,
+            proj: Mat4::IDENTITY,
+        };
+
         let desc_pool = create_desc_pool(&device);
         let desc_sets = create_desc_sets(&device, desc_set_layout, desc_pool);
 
@@ -219,6 +227,7 @@ impl Renderer {
             uniform_buffers,
             uniform_buffers_memories,
             uniform_buffers_mappings,
+            uniform_buffer_object,
             image_available,
             render_finished,
             is_rendering,
@@ -331,8 +340,6 @@ impl Renderer {
             image_index
         };
 
-        self.update_uniform_buffer();
-
         self.record_commands_to_buffer(command_buffer, self.framebuffers[image_index as usize]);
 
         let submit_info = vk::SubmitInfo {
@@ -372,27 +379,18 @@ impl Renderer {
         self.current_frame = (self.current_frame + 1) % FRAMES_IN_FLIGHT;
     }
 
-    fn update_uniform_buffer(&self) {
-        let model = Mat4::from_rotation_z((self.current_time as f32) * 90.0_f32.to_radians());
-        let view = Mat4::look_at_rh(
-            Vec3::new(2.0, 2.0, 2.0),
-            Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(0.0, 0.0, 1.0),
-        );
-        let aspect_ratio = self.swapchain_extent.width as f32 / self.swapchain_extent.height as f32;
-        let mut proj = Mat4::perspective_rh(45.0_f32.to_radians(), aspect_ratio, 0.1, 10.0);
-
-        proj.y_axis.y *= -1.0;
-
-        let ubo = UniformBufferObject { model, view, proj };
-
-        unsafe {
-            self.uniform_buffers_mappings[self.current_frame].copy_from_nonoverlapping(&ubo, 1);
-        }
-    }
-
     pub fn update(&mut self, _dt: f64, t: f64) {
         self.current_time = t;
+    }
+
+    pub fn update_ubo(&mut self, camera: &mut Camera) {
+        self.uniform_buffer_object.view = *camera.view();
+        self.uniform_buffer_object.proj = *camera.proj();
+
+        unsafe {
+            self.uniform_buffers_mappings[self.current_frame]
+                .copy_from_nonoverlapping(&self.uniform_buffer_object, 1);
+        }
     }
 
     unsafe fn cleanup_swapchain(&self) {
