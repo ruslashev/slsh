@@ -40,6 +40,9 @@ impl MainLoop {
         let updates_per_second: i16 = 60;
         let dt = 1.0 / f64::from(updates_per_second);
 
+        let title_update_delay = 0.1;
+        let mut next_title_update_time = 0.0;
+
         let mut current_time = self.window.current_time();
         let minimized = false;
 
@@ -68,9 +71,27 @@ impl MainLoop {
                 break;
             }
 
+            let draw_start = self.window.current_time();
+
             self.renderer.update_ui_push_consts(&mut self.ui);
             self.renderer.update_ubo(&mut self.camera);
             self.renderer.present();
+
+            let frame_end = self.window.current_time();
+
+            if frame_end > next_title_update_time {
+                next_title_update_time = frame_end + title_update_delay;
+
+                let draw_time = frame_end - draw_start;
+                let frame_time = frame_end - real_time;
+
+                let draw_ms = draw_time * 1000.0;
+                let fps = 1.0 / frame_time;
+
+                let title = format!("slsh | draw = {:05.2} ms, FPS = {:04.0}", draw_ms, fps);
+
+                self.window.set_title(&title);
+            }
         }
     }
 }
