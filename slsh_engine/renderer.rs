@@ -59,13 +59,7 @@ pub struct Renderer {
     uniform_buffers_memories: Vec<vk::DeviceMemory>,
     uniform_buffers_mappings: Vec<*mut UniformBufferObject>,
     uniform_buffer_object: UniformBufferObject,
-    vertex_buffer: vk::Buffer,
-    vertex_buffer_memory: vk::DeviceMemory,
-    index_buffer: vk::Buffer,
-    index_buffer_memory: vk::DeviceMemory,
-    index_count: u32,
-    pipeline_layout: vk::PipelineLayout,
-    pipeline: vk::Pipeline,
+    meshes: Vec<MeshData>,
     current_frame: usize,
     current_time: f64,
 }
@@ -95,6 +89,17 @@ struct UniformBufferObject {
 struct Mesh {
     vertices: Vec<f32>,
     indices: Vec<u16>,
+}
+
+struct MeshData {
+    device: ash::Device,
+    vertex_buffer: vk::Buffer,
+    vertex_buffer_memory: vk::DeviceMemory,
+    index_buffer: vk::Buffer,
+    index_buffer_memory: vk::DeviceMemory,
+    index_count: u32,
+    pipeline_layout: vk::PipelineLayout,
+    pipeline: vk::Pipeline,
 }
 
 impl Renderer {
@@ -151,31 +156,17 @@ impl Renderer {
 
         fill_desc_sets(&device, &uniform_buffers, &desc_sets);
 
-        let grid = create_grid_mesh(2.0, 32);
-
-        let (vertex_buffer, vertex_buffer_memory) = create_buffer_of_type(
-            &device,
+        let grid = create_grid_mesh(2.0, 32).into_mesh_data(
+            device.clone(),
             &device_mem_properties,
             command_pool,
             graphics_queue,
-            vk::BufferUsageFlags::VERTEX_BUFFER,
-            &grid.vertices,
+            desc_set_layout,
+            swapchain_extent,
+            render_pass,
         );
 
-        let (index_buffer, index_buffer_memory) = create_buffer_of_type(
-            &device,
-            &device_mem_properties,
-            command_pool,
-            graphics_queue,
-            vk::BufferUsageFlags::INDEX_BUFFER,
-            &grid.indices,
-        );
-
-        let index_count = grid.indices.len().try_into().unwrap();
-
-        let pipeline_layout = create_pipeline_layout(&device, &desc_set_layout);
-        let pipeline =
-            create_graphics_pipeline(&device, swapchain_extent, render_pass, pipeline_layout);
+        let meshes = vec![grid];
 
         Self {
             instance,
@@ -202,13 +193,7 @@ impl Renderer {
             uniform_buffers_memories,
             uniform_buffers_mappings,
             uniform_buffer_object,
-            vertex_buffer,
-            vertex_buffer_memory,
-            index_buffer,
-            index_buffer_memory,
-            index_count,
-            pipeline_layout,
-            pipeline,
+            meshes,
             current_frame: 0,
             current_time: 0.0,
         }
@@ -258,31 +243,9 @@ impl Renderer {
                 vk::SubpassContents::INLINE,
             );
 
-            self.device.cmd_bind_pipeline(
-                cmd_buffer,
-                vk::PipelineBindPoint::GRAPHICS,
-                self.pipeline,
-            );
-
-            self.device.cmd_bind_vertex_buffers(cmd_buffer, 0, &[self.vertex_buffer], &[0]);
-
-            self.device.cmd_bind_index_buffer(
-                cmd_buffer,
-                self.index_buffer,
-                0,
-                vk::IndexType::UINT16,
-            );
-
-            self.device.cmd_bind_descriptor_sets(
-                cmd_buffer,
-                vk::PipelineBindPoint::GRAPHICS,
-                self.pipeline_layout,
-                0,
-                &[self.desc_sets[self.current_frame]],
-                &[],
-            );
-
-            self.device.cmd_draw_indexed(cmd_buffer, self.index_count, 1, 0, 0, 0);
+            for mesh in &self.meshes {
+                mesh.record_draw_commands(cmd_buffer, self.desc_sets[self.current_frame]);
+            }
 
             self.device.cmd_end_render_pass(cmd_buffer);
 
@@ -390,8 +353,6 @@ impl Renderer {
             self.device.destroy_framebuffer(*fb, None);
         }
 
-        self.device.destroy_pipeline(self.pipeline, None);
-        self.device.destroy_pipeline_layout(self.pipeline_layout, None);
         self.device.destroy_render_pass(self.render_pass, None);
         self.device.free_command_buffers(self.command_pool, &self.command_buffers);
         for image_view in &self.swapchain_image_views {
@@ -428,17 +389,101 @@ impl Drop for Renderer {
                 self.device.free_memory(*mem, None);
             }
 
+            self.meshes.drain(..);
+
             self.device.destroy_descriptor_pool(self.desc_pool, None);
             self.device.destroy_descriptor_set_layout(self.desc_set_layout, None);
-            self.device.destroy_buffer(self.index_buffer, None);
-            self.device.free_memory(self.index_buffer_memory, None);
-            self.device.destroy_buffer(self.vertex_buffer, None);
-            self.device.free_memory(self.vertex_buffer_memory, None);
 
             self.device.destroy_command_pool(self.command_pool, None);
             self.device.destroy_device(None);
             self.surface_loader.destroy_surface(self.surface, None);
             self.instance.destroy_instance(None);
+        }
+    }
+}
+
+impl Mesh {
+    fn into_mesh_data(
+        self,
+        device: ash::Device,
+        device_mem_properties: &vk::PhysicalDeviceMemoryProperties,
+        command_pool: vk::CommandPool,
+        graphics_queue: vk::Queue,
+        desc_set_layout: vk::DescriptorSetLayout,
+        swapchain_extent: vk::Extent2D,
+        render_pass: vk::RenderPass,
+    ) -> MeshData {
+        let (vertex_buffer, vertex_buffer_memory) = create_buffer_of_type(
+            &device,
+            device_mem_properties,
+            command_pool,
+            graphics_queue,
+            vk::BufferUsageFlags::VERTEX_BUFFER,
+            &self.vertices,
+        );
+
+        let (index_buffer, index_buffer_memory) = create_buffer_of_type(
+            &device,
+            device_mem_properties,
+            command_pool,
+            graphics_queue,
+            vk::BufferUsageFlags::INDEX_BUFFER,
+            &self.indices,
+        );
+
+        let index_count = self.indices.len().try_into().unwrap();
+
+        let pipeline_layout = create_pipeline_layout(&device, &desc_set_layout);
+        let pipeline =
+            create_graphics_pipeline(&device, swapchain_extent, render_pass, pipeline_layout);
+
+        MeshData {
+            device,
+            vertex_buffer,
+            vertex_buffer_memory,
+            index_buffer,
+            index_buffer_memory,
+            index_count,
+            pipeline_layout,
+            pipeline,
+        }
+    }
+}
+
+impl MeshData {
+    unsafe fn record_draw_commands(
+        &self,
+        cmd_buffer: vk::CommandBuffer,
+        desc_set: vk::DescriptorSet,
+    ) {
+        self.device.cmd_bind_pipeline(cmd_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
+
+        self.device.cmd_bind_vertex_buffers(cmd_buffer, 0, &[self.vertex_buffer], &[0]);
+
+        self.device.cmd_bind_index_buffer(cmd_buffer, self.index_buffer, 0, vk::IndexType::UINT16);
+
+        self.device.cmd_bind_descriptor_sets(
+            cmd_buffer,
+            vk::PipelineBindPoint::GRAPHICS,
+            self.pipeline_layout,
+            0,
+            &[desc_set],
+            &[],
+        );
+
+        self.device.cmd_draw_indexed(cmd_buffer, self.index_count, 1, 0, 0, 0);
+    }
+}
+
+impl Drop for MeshData {
+    fn drop(&mut self) {
+        unsafe {
+            self.device.destroy_buffer(self.index_buffer, None);
+            self.device.free_memory(self.index_buffer_memory, None);
+            self.device.destroy_buffer(self.vertex_buffer, None);
+            self.device.free_memory(self.vertex_buffer_memory, None);
+            self.device.destroy_pipeline(self.pipeline, None);
+            self.device.destroy_pipeline_layout(self.pipeline_layout, None);
         }
     }
 }
@@ -1606,8 +1651,5 @@ fn create_grid_mesh(res: f32, cells: usize) -> Mesh {
         x_off += res;
     }
 
-    Mesh {
-        vertices,
-        indices,
-    }
+    Mesh { vertices, indices }
 }

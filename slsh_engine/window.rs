@@ -183,6 +183,6 @@ fn center_window(res: &Resolution, glfw: &mut glfw::Glfw, handle: &mut glfw::Win
             let win_y = scr_height / 2 - win_height / 2;
 
             handle.set_pos(win_x, win_y);
-        })
+        });
     }
 }
