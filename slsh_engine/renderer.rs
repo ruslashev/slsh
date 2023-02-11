@@ -1,15 +1,16 @@
 use std::default::Default;
 use std::ffi::{c_char, CStr, CString};
 use std::fmt::Display;
-use std::mem::size_of;
+use std::mem::{size_of, transmute};
 use std::ptr;
 use std::str::FromStr;
 
 use ash::extensions::khr::{Surface, Swapchain};
 use ash::vk;
-use glam::Mat4;
+use glam::{Mat4, Vec3};
 
 use crate::camera::Camera;
+use crate::ui::UserInterface;
 use crate::window::Window;
 
 macro_rules! include_shader {
@@ -23,7 +24,12 @@ const REQ_DEVICE_EXTENSIONS: &[&str] = &[
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     "VK_KHR_portability_subset",
 ];
-const REQ_VALIDATION_LAYERS: &[&str] = &["VK_LAYER_KHRONOS_validation"];
+const REQ_VALIDATION_LAYERS: &[&str] = &[
+    "VK_LAYER_MESA_device_select",
+    "VK_LAYER_LUNARG_monitor",
+    "VK_LAYER_KHRONOS_synchronization2",
+    "VK_LAYER_KHRONOS_validation",
+];
 const API_VER_MAJOR: u32 = 1;
 const API_VER_MINOR: u32 = 0;
 const API_VER_PATCH: u32 = 0;
@@ -52,6 +58,7 @@ pub struct Renderer {
     image_available: Vec<vk::Semaphore>,
     render_finished: Vec<vk::Semaphore>,
     is_rendering: Vec<vk::Fence>,
+    crosshair_push_consts: CrosshairPushConstants,
     desc_set_layout: vk::DescriptorSetLayout,
     desc_pool: vk::DescriptorPool,
     desc_sets: Vec<vk::DescriptorSet>,
@@ -89,6 +96,13 @@ struct UniformBufferObject {
 struct Mesh {
     vertices: Vec<f32>,
     indices: Vec<u16>,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct CrosshairPushConstants {
+    proj: Mat4,
+    color: Vec3,
 }
 
 struct MeshData {
@@ -141,6 +155,15 @@ impl Renderer {
             create_framebuffers(&device, &swapchain_image_views, swapchain_extent, render_pass);
         let (image_available, render_finished, is_rendering) = create_sync_objects(&device);
 
+        let crosshair_push_consts = CrosshairPushConstants {
+            proj: Mat4::IDENTITY,
+            color: Vec3::new(0.0, 1.0, 0.0),
+        };
+
+        let push_const_range = create_push_const_range::<CrosshairPushConstants>(
+            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+        );
+
         let desc_set_layout = create_desc_set_layout(&device);
         let desc_pool = create_desc_pool(&device);
         let desc_sets = create_desc_sets(&device, desc_set_layout, desc_pool);
@@ -156,17 +179,39 @@ impl Renderer {
 
         fill_desc_sets(&device, &uniform_buffers, &desc_sets);
 
+        let grid_vert_shader_compiled = include_shader!("grid.vert");
+        let grid_frag_shader_compiled = include_shader!("grid.frag");
+
         let grid = create_grid_mesh(2.0, 32).into_mesh_data(
             device.clone(),
             &device_mem_properties,
             command_pool,
             graphics_queue,
-            desc_set_layout,
+            None,
+            Some(desc_set_layout),
+            grid_vert_shader_compiled,
+            grid_frag_shader_compiled,
             swapchain_extent,
             render_pass,
         );
 
-        let meshes = vec![grid];
+        let crosshair_vert_shader_compiled = include_shader!("crosshair.vert");
+        let crosshair_frag_shader_compiled = include_shader!("crosshair.frag");
+
+        let crosshair = create_crosshair_mesh(6.0, 2.0, window).into_mesh_data(
+            device.clone(),
+            &device_mem_properties,
+            command_pool,
+            graphics_queue,
+            Some(push_const_range),
+            None,
+            crosshair_vert_shader_compiled,
+            crosshair_frag_shader_compiled,
+            swapchain_extent,
+            render_pass,
+        );
+
+        let meshes = vec![grid, crosshair];
 
         Self {
             instance,
@@ -186,6 +231,7 @@ impl Renderer {
             image_available,
             render_finished,
             is_rendering,
+            crosshair_push_consts,
             desc_set_layout,
             desc_pool,
             desc_sets,
@@ -243,9 +289,21 @@ impl Renderer {
                 vk::SubpassContents::INLINE,
             );
 
-            for mesh in &self.meshes {
-                mesh.record_draw_commands(cmd_buffer, self.desc_sets[self.current_frame]);
-            }
+            let push_const_stage = vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT;
+
+            // unfortunately a copy, because can't find good transmute
+            let push_consts_bytes: [u8; 80] = transmute(self.crosshair_push_consts);
+
+            self.meshes[0].record_draw_commands(
+                cmd_buffer,
+                None,
+                Some(self.desc_sets[self.current_frame]),
+            );
+            self.meshes[1].record_draw_commands(
+                cmd_buffer,
+                Some((push_const_stage, &push_consts_bytes)),
+                None,
+            );
 
             self.device.cmd_end_render_pass(cmd_buffer);
 
@@ -336,6 +394,10 @@ impl Renderer {
         self.current_time = t;
     }
 
+    pub fn update_ui_push_consts(&mut self, ui: &mut UserInterface) {
+        self.crosshair_push_consts.proj = *ui.proj();
+    }
+
     pub fn update_ubo(&mut self, camera: &mut Camera) {
         self.uniform_buffer_object.view = *camera.view();
         self.uniform_buffer_object.proj = *camera.proj();
@@ -409,7 +471,10 @@ impl Mesh {
         device_mem_properties: &vk::PhysicalDeviceMemoryProperties,
         command_pool: vk::CommandPool,
         graphics_queue: vk::Queue,
-        desc_set_layout: vk::DescriptorSetLayout,
+        push_const_range: Option<vk::PushConstantRange>,
+        desc_set_layout: Option<vk::DescriptorSetLayout>,
+        vert_shader_compiled: &[u8],
+        frag_shader_compiled: &[u8],
         swapchain_extent: vk::Extent2D,
         render_pass: vk::RenderPass,
     ) -> MeshData {
@@ -433,9 +498,16 @@ impl Mesh {
 
         let index_count = self.indices.len().try_into().unwrap();
 
-        let pipeline_layout = create_pipeline_layout(&device, &desc_set_layout);
-        let pipeline =
-            create_graphics_pipeline(&device, swapchain_extent, render_pass, pipeline_layout);
+        let pipeline_layout =
+            create_pipeline_layout(&device, push_const_range.as_ref(), desc_set_layout.as_ref());
+        let pipeline = create_graphics_pipeline(
+            &device,
+            vert_shader_compiled,
+            frag_shader_compiled,
+            swapchain_extent,
+            render_pass,
+            pipeline_layout,
+        );
 
         MeshData {
             device,
@@ -454,7 +526,8 @@ impl MeshData {
     unsafe fn record_draw_commands(
         &self,
         cmd_buffer: vk::CommandBuffer,
-        desc_set: vk::DescriptorSet,
+        push_consts: Option<(vk::ShaderStageFlags, &[u8])>,
+        desc_sets: Option<vk::DescriptorSet>,
     ) {
         self.device.cmd_bind_pipeline(cmd_buffer, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
 
@@ -462,14 +535,26 @@ impl MeshData {
 
         self.device.cmd_bind_index_buffer(cmd_buffer, self.index_buffer, 0, vk::IndexType::UINT16);
 
-        self.device.cmd_bind_descriptor_sets(
-            cmd_buffer,
-            vk::PipelineBindPoint::GRAPHICS,
-            self.pipeline_layout,
-            0,
-            &[desc_set],
-            &[],
-        );
+        if let Some((push_const_stage_flags, push_const_bytes)) = push_consts {
+            self.device.cmd_push_constants(
+                cmd_buffer,
+                self.pipeline_layout,
+                push_const_stage_flags,
+                0,
+                push_const_bytes,
+            );
+        }
+
+        if let Some(set) = desc_sets {
+            self.device.cmd_bind_descriptor_sets(
+                cmd_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pipeline_layout,
+                0,
+                &[set],
+                &[],
+            );
+        }
 
         self.device.cmd_draw_indexed(cmd_buffer, self.index_count, 1, 0, 0, 0);
     }
@@ -1031,14 +1116,25 @@ fn create_render_pass(device: &ash::Device, swapchain_format: vk::Format) -> vk:
 
 fn create_pipeline_layout(
     device: &ash::Device,
-    desc_set_layout: &vk::DescriptorSetLayout,
+    push_const_range: Option<&vk::PushConstantRange>,
+    desc_set_layout: Option<&vk::DescriptorSetLayout>,
 ) -> vk::PipelineLayout {
+    let (push_constant_range_count, p_push_constant_ranges) = match push_const_range {
+        Some(range) => (1, range as *const vk::PushConstantRange),
+        None => (0, ptr::null()),
+    };
+
+    let (set_layout_count, p_set_layouts) = match desc_set_layout {
+        Some(set_layout) => (1, set_layout as *const vk::DescriptorSetLayout),
+        None => (0, ptr::null()),
+    };
+
     let create_info = vk::PipelineLayoutCreateInfo {
         s_type: vk::StructureType::PIPELINE_LAYOUT_CREATE_INFO,
-        push_constant_range_count: 0,
-        p_push_constant_ranges: ptr::null(),
-        set_layout_count: 1,
-        p_set_layouts: desc_set_layout,
+        push_constant_range_count,
+        p_push_constant_ranges,
+        set_layout_count,
+        p_set_layouts,
         ..Default::default()
     };
 
@@ -1067,15 +1163,14 @@ fn create_desc_set_layout(device: &ash::Device) -> vk::DescriptorSetLayout {
 
 fn create_graphics_pipeline(
     device: &ash::Device,
+    vert_shader_compiled: &[u8],
+    frag_shader_compiled: &[u8],
     extent: vk::Extent2D,
     render_pass: vk::RenderPass,
     pipeline_layout: vk::PipelineLayout,
 ) -> vk::Pipeline {
-    let vert_compiled = include_shader!("grid.vert");
-    let frag_compiled = include_shader!("grid.frag");
-
-    let vert_shader_mod = create_shader_module(device, vert_compiled);
-    let frag_shader_mod = create_shader_module(device, frag_compiled);
+    let vert_shader_mod = create_shader_module(device, vert_shader_compiled);
+    let frag_shader_mod = create_shader_module(device, frag_shader_compiled);
 
     let entrypoint_name = CString::new("main").unwrap();
 
@@ -1545,6 +1640,14 @@ fn create_desc_sets(
     unsafe { device.allocate_descriptor_sets(&alloc_info) }.check_err("allocate descriptor sets")
 }
 
+fn create_push_const_range<T>(stage_flags: vk::ShaderStageFlags) -> vk::PushConstantRange {
+    vk::PushConstantRange {
+        stage_flags,
+        offset: 0,
+        size: size_of::<T>().try_into().unwrap(),
+    }
+}
+
 fn fill_desc_sets(
     device: &ash::Device,
     uniform_buffers: &[vk::Buffer],
@@ -1649,6 +1752,44 @@ fn create_grid_mesh(res: f32, cells: usize) -> Mesh {
 
         idx += 2;
         x_off += res;
+    }
+
+    Mesh { vertices, indices }
+}
+
+fn create_crosshair_mesh(length: f32, thickness: f32, window: &Window) -> Mesh {
+    // Center X and Y
+    let cx = window.width() as f32 / 2.0;
+    let cy = window.height() as f32 / 2.0;
+
+    let near = thickness;
+    let far = near + length;
+
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+
+    vertices.push(cx);
+    vertices.push(cy + near + 0.5);
+    vertices.push(cx);
+    vertices.push(cy + far + 0.5);
+
+    vertices.push(cx + near + 0.5);
+    vertices.push(cy);
+    vertices.push(cx + far + 0.5);
+    vertices.push(cy);
+
+    vertices.push(cx);
+    vertices.push(cy - near - 0.5);
+    vertices.push(cx);
+    vertices.push(cy - far - 0.5);
+
+    vertices.push(cx - near - 0.5);
+    vertices.push(cy);
+    vertices.push(cx - far - 0.5);
+    vertices.push(cy);
+
+    for i in 0..16 {
+        indices.push(i);
     }
 
     Mesh { vertices, indices }

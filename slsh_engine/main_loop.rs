@@ -1,6 +1,7 @@
 use crate::camera::Camera;
 use crate::input::InputHandler;
 use crate::renderer::Renderer;
+use crate::ui::UserInterface;
 use crate::window::{Event, Key, Resolution, Window};
 
 pub struct MainLoop {
@@ -8,6 +9,7 @@ pub struct MainLoop {
     renderer: Renderer,
     camera: Camera,
     input: InputHandler,
+    ui: UserInterface,
     running: bool,
 }
 
@@ -22,11 +24,14 @@ impl MainLoop {
         let (prev_mouse_x, prev_mouse_y) = window.mouse_pos();
         let input = InputHandler::new(prev_mouse_x as i32, prev_mouse_y as i32);
 
+        let ui = UserInterface::new(window.width(), window.height());
+
         Self {
             window,
             renderer,
             camera,
             input,
+            ui,
             running: true,
         }
     }
@@ -63,6 +68,7 @@ impl MainLoop {
                 break;
             }
 
+            self.renderer.update_ui_push_consts(&mut self.ui);
             self.renderer.update_ubo(&mut self.camera);
             self.renderer.present();
         }
