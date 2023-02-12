@@ -65,6 +65,14 @@ impl Camera {
         &self.view
     }
 
+    pub fn pitch(&self) -> f32 {
+        self.pitch
+    }
+
+    pub fn yaw(&self) -> f32 {
+        self.yaw
+    }
+
     pub fn update(&mut self, input: &InputHandler, _dt: f64, _current_time: f64) {
         let sensitiviy = 2.2;
         let m_yaw = 0.022;

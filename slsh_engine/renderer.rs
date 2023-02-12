@@ -7,7 +7,7 @@ use std::str::FromStr;
 
 use ash::extensions::khr::{Surface, Swapchain};
 use ash::vk;
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Vec2, Vec3};
 
 use crate::camera::Camera;
 use crate::ui::UserInterface;
@@ -58,6 +58,7 @@ pub struct Renderer {
     image_available: Vec<vk::Semaphore>,
     render_finished: Vec<vk::Semaphore>,
     is_rendering: Vec<vk::Fence>,
+    skybox_push_consts: SkyboxPushConstants,
     crosshair_push_consts: CrosshairPushConstants,
     desc_set_layout: vk::DescriptorSetLayout,
     desc_pool: vk::DescriptorPool,
@@ -96,6 +97,13 @@ struct UniformBufferObject {
 struct Mesh {
     vertices: Vec<f32>,
     indices: Vec<u16>,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct SkyboxPushConstants {
+    res: Vec2,
+    view_angles: Vec2,
 }
 
 #[repr(C)]
@@ -155,12 +163,20 @@ impl Renderer {
             create_framebuffers(&device, &swapchain_image_views, swapchain_extent, render_pass);
         let (image_available, render_finished, is_rendering) = create_sync_objects(&device);
 
+        let skybox_push_consts = SkyboxPushConstants {
+            res: Vec2::new(window.width() as f32, window.height() as f32),
+            view_angles: Vec2::new(0.0, 0.0),
+        };
+
         let crosshair_push_consts = CrosshairPushConstants {
             proj: Mat4::IDENTITY,
             color: Vec3::new(0.0, 1.0, 0.0),
         };
 
-        let push_const_range = create_push_const_range::<CrosshairPushConstants>(
+        let push_const_range_skybox =
+            create_push_const_range::<SkyboxPushConstants>(vk::ShaderStageFlags::FRAGMENT);
+
+        let push_const_range_crosshair = create_push_const_range::<CrosshairPushConstants>(
             vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
         );
 
@@ -179,6 +195,23 @@ impl Renderer {
 
         fill_desc_sets(&device, &uniform_buffers, &desc_sets);
 
+        let skybox_vert_shader_compiled = include_shader!("skybox.vert");
+        let skybox_frag_shader_compiled = include_shader!("skybox.frag");
+
+        let skybox = create_skybox_mesh().into_mesh_data(
+            device.clone(),
+            &device_mem_properties,
+            command_pool,
+            graphics_queue,
+            Some(push_const_range_skybox),
+            None,
+            skybox_vert_shader_compiled,
+            skybox_frag_shader_compiled,
+            vk::PrimitiveTopology::TRIANGLE_LIST,
+            swapchain_extent,
+            render_pass,
+        );
+
         let grid_vert_shader_compiled = include_shader!("grid.vert");
         let grid_frag_shader_compiled = include_shader!("grid.frag");
 
@@ -191,6 +224,7 @@ impl Renderer {
             Some(desc_set_layout),
             grid_vert_shader_compiled,
             grid_frag_shader_compiled,
+            vk::PrimitiveTopology::LINE_LIST,
             swapchain_extent,
             render_pass,
         );
@@ -203,15 +237,16 @@ impl Renderer {
             &device_mem_properties,
             command_pool,
             graphics_queue,
-            Some(push_const_range),
+            Some(push_const_range_crosshair),
             None,
             crosshair_vert_shader_compiled,
             crosshair_frag_shader_compiled,
+            vk::PrimitiveTopology::LINE_LIST,
             swapchain_extent,
             render_pass,
         );
 
-        let meshes = vec![grid, crosshair];
+        let meshes = vec![skybox, grid, crosshair];
 
         Self {
             instance,
@@ -231,6 +266,7 @@ impl Renderer {
             image_available,
             render_finished,
             is_rendering,
+            skybox_push_consts,
             crosshair_push_consts,
             desc_set_layout,
             desc_pool,
@@ -289,19 +325,28 @@ impl Renderer {
                 vk::SubpassContents::INLINE,
             );
 
-            let push_const_stage = vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT;
+            let stage_frag = vk::ShaderStageFlags::FRAGMENT;
+            let stage_all = vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT;
 
             // unfortunately a copy, because can't find good transmute
-            let push_consts_bytes: [u8; 80] = transmute(self.crosshair_push_consts);
+            let skybox_push_const_bytes: [u8; 16] = transmute(self.skybox_push_consts);
+            let crosshair_push_const_bytes: [u8; 80] = transmute(self.crosshair_push_consts);
 
             self.meshes[0].record_draw_commands(
+                cmd_buffer,
+                Some((stage_frag, &skybox_push_const_bytes)),
+                None,
+            );
+
+            self.meshes[1].record_draw_commands(
                 cmd_buffer,
                 None,
                 Some(self.desc_sets[self.current_frame]),
             );
-            self.meshes[1].record_draw_commands(
+
+            self.meshes[2].record_draw_commands(
                 cmd_buffer,
-                Some((push_const_stage, &push_consts_bytes)),
+                Some((stage_all, &crosshair_push_const_bytes)),
                 None,
             );
 
@@ -394,11 +439,12 @@ impl Renderer {
         self.current_time = t;
     }
 
-    pub fn update_ui_push_consts(&mut self, ui: &mut UserInterface) {
-        self.crosshair_push_consts.proj = *ui.proj();
-    }
+    pub fn update_data(&mut self, ui: &mut UserInterface, camera: &mut Camera) {
+        self.skybox_push_consts.view_angles.x = camera.pitch();
+        self.skybox_push_consts.view_angles.y = camera.yaw();
 
-    pub fn update_ubo(&mut self, camera: &mut Camera) {
+        self.crosshair_push_consts.proj = *ui.proj();
+
         self.uniform_buffer_object.view = *camera.view();
         self.uniform_buffer_object.proj = *camera.proj();
 
@@ -475,6 +521,7 @@ impl Mesh {
         desc_set_layout: Option<vk::DescriptorSetLayout>,
         vert_shader_compiled: &[u8],
         frag_shader_compiled: &[u8],
+        topology: vk::PrimitiveTopology,
         swapchain_extent: vk::Extent2D,
         render_pass: vk::RenderPass,
     ) -> MeshData {
@@ -500,10 +547,12 @@ impl Mesh {
 
         let pipeline_layout =
             create_pipeline_layout(&device, push_const_range.as_ref(), desc_set_layout.as_ref());
+
         let pipeline = create_graphics_pipeline(
             &device,
             vert_shader_compiled,
             frag_shader_compiled,
+            topology,
             swapchain_extent,
             render_pass,
             pipeline_layout,
@@ -1160,6 +1209,7 @@ fn create_graphics_pipeline(
     device: &ash::Device,
     vert_shader_compiled: &[u8],
     frag_shader_compiled: &[u8],
+    topology: vk::PrimitiveTopology,
     extent: vk::Extent2D,
     render_pass: vk::RenderPass,
     pipeline_layout: vk::PipelineLayout,
@@ -1213,7 +1263,7 @@ fn create_graphics_pipeline(
 
     let input_assembly_state = vk::PipelineInputAssemblyStateCreateInfo {
         s_type: vk::StructureType::PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-        topology: vk::PrimitiveTopology::LINE_LIST,
+        topology,
         primitive_restart_enable: vk::FALSE,
         ..Default::default()
     };
@@ -1290,22 +1340,15 @@ fn create_graphics_pipeline(
 
     let color_blend_attachment = vk::PipelineColorBlendAttachmentState {
         blend_enable: vk::FALSE,
-        src_color_blend_factor: vk::BlendFactor::ONE,
-        dst_color_blend_factor: vk::BlendFactor::ZERO,
-        color_blend_op: vk::BlendOp::ADD,
-        src_alpha_blend_factor: vk::BlendFactor::ONE,
-        dst_alpha_blend_factor: vk::BlendFactor::ZERO,
-        alpha_blend_op: vk::BlendOp::ADD,
         color_write_mask: vk::ColorComponentFlags::RGBA,
+        ..Default::default()
     };
 
     let color_blend_state = vk::PipelineColorBlendStateCreateInfo {
         s_type: vk::StructureType::PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
         logic_op_enable: vk::FALSE,
-        logic_op: vk::LogicOp::COPY,
         attachment_count: 1,
         p_attachments: &color_blend_attachment,
-        blend_constants: [0.0, 0.0, 0.0, 0.0],
         ..Default::default()
     };
 
@@ -1711,6 +1754,13 @@ fn create_fence(device: &ash::Device, signaled: bool) -> vk::Fence {
     };
 
     unsafe { device.create_fence(&create_info, None) }.check_err("create fence")
+}
+
+fn create_skybox_mesh() -> Mesh {
+    Mesh {
+        vertices: vec![-1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0],
+        indices: vec![0, 1, 2, 2, 3, 0],
+    }
 }
 
 fn create_grid_mesh(res: f32, cells: usize) -> Mesh {

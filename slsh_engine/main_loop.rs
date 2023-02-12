@@ -73,8 +73,7 @@ impl MainLoop {
 
             let draw_start = self.window.current_time();
 
-            self.renderer.update_ui_push_consts(&mut self.ui);
-            self.renderer.update_ubo(&mut self.camera);
+            self.renderer.update_data(&mut self.ui, &mut self.camera);
             self.renderer.present();
 
             let frame_end = self.window.current_time();
