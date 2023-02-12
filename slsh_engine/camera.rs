@@ -39,7 +39,7 @@ impl Camera {
             pitch_min: -PI / 2.0,
             pitch_max: PI / 2.0,
             aspect_ratio,
-            position: Vec3::new(0.0, 8.0, 0.0),
+            position: Vec3::new(0.0, 0.0, 0.0),
             proj: Mat4::IDENTITY,
             view: Mat4::IDENTITY,
             proj_needs_recalc: true,
@@ -71,6 +71,10 @@ impl Camera {
 
     pub fn yaw(&self) -> f32 {
         self.yaw
+    }
+
+    pub fn set_position(&mut self, position: Vec3) {
+        self.position = position;
     }
 
     pub fn update(&mut self, input: &InputHandler, _dt: f64, _current_time: f64) {

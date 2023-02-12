@@ -1,5 +1,6 @@
 use crate::camera::Camera;
 use crate::input::InputHandler;
+use crate::physics::Entity;
 use crate::renderer::Renderer;
 use crate::ui::UserInterface;
 use crate::window::{Event, Key, Resolution, Window};
@@ -10,6 +11,7 @@ pub struct MainLoop {
     camera: Camera,
     input: InputHandler,
     ui: UserInterface,
+    player: Entity,
     running: bool,
 }
 
@@ -26,12 +28,15 @@ impl MainLoop {
 
         let ui = UserInterface::new(window.width(), window.height());
 
+        let player = Entity::new(0.0, 8.0, 0.0);
+
         Self {
             window,
             renderer,
             camera,
             input,
             ui,
+            player,
             running: true,
         }
     }
@@ -58,6 +63,8 @@ impl MainLoop {
 
                 let (mouse_x, mouse_y) = self.window.mouse_pos();
                 self.input.handle_mouse(mouse_x as i32, mouse_y as i32);
+                self.player.update(dt, current_time);
+                self.camera.set_position(self.player.eye_position());
                 self.camera.update(&self.input, dt, current_time);
                 self.renderer.update(dt, current_time);
             }

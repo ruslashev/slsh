@@ -10,6 +10,7 @@
 pub mod camera;
 pub mod input;
 pub mod main_loop;
+pub mod physics;
 pub mod renderer;
 pub mod ui;
 pub mod window;
