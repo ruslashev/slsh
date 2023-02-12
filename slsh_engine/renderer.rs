@@ -689,8 +689,6 @@ unsafe fn gather_phys_device_infos(
 ) -> Vec<PhysDeviceInfo> {
     let mut phys_device_infos = Vec::with_capacity(phys_devices.len());
 
-    println!("Physical devices:");
-
     for device_ref in phys_devices {
         let phys_device = *device_ref;
         let properties = instance.get_physical_device_properties(phys_device);
@@ -701,9 +699,6 @@ unsafe fn gather_phys_device_infos(
         let extensions = instance
             .enumerate_device_extension_properties(phys_device)
             .check_err("enumerate device extensions");
-
-        let name = CStr::from_ptr(properties.device_name.as_ptr()).to_str().unwrap();
-        println!("\t{}", name);
 
         if supports_required_queues && supports_required_extensions(&extensions) {
             let info = PhysDeviceInfo {
@@ -759,7 +754,7 @@ fn choose_swapchain_format(
             .check_err("get surface formats");
 
     for format in &formats {
-        if format.format == vk::Format::B8G8R8A8_SRGB
+        if format.format == vk::Format::B8G8R8A8_UNORM
             && format.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
         {
             return *format;
