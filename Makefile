@@ -32,7 +32,8 @@ $(BIN): $(BUILT_SHADERS)
 
 $(COMP_SHADERS_DIR)/%.spv: shaders/%
 	@mkdir -p $(@D)
-	glslc $(GLSLC_FLAGS) $^ -o $@
+	@echo glslc $^
+	@glslc $(GLSLC_FLAGS) $^ -o $@
 
 clean:
 	cargo clean
