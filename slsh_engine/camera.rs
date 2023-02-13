@@ -36,8 +36,8 @@ impl Camera {
             pitch: 0.0,
             yaw: 0.0,
             roll: 0.0,
-            pitch_min: -PI / 2.0,
-            pitch_max: PI / 2.0,
+            pitch_min: -PI / 2.0 + 0.001,
+            pitch_max: PI / 2.0 - 0.001,
             aspect_ratio,
             position: Vec3::new(0.0, 0.0, 0.0),
             proj: Mat4::IDENTITY,
@@ -93,9 +93,7 @@ impl Camera {
 
     fn recalc_view_matrix(&mut self) {
         self.view = Mat4::IDENTITY
-            * Mat4::from_rotation_x(-self.pitch)
-            * Mat4::from_rotation_y(-self.yaw)
-            * Mat4::from_rotation_z(-self.roll)
+            * Mat4::from_euler(glam::EulerRot::XYZ, -self.pitch, -self.yaw, -self.roll)
             * Mat4::from_translation(-self.position);
 
         self.view_needs_recalc = false;
