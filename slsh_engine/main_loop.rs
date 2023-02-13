@@ -56,6 +56,13 @@ impl MainLoop {
                 self.window.block_until_event();
             }
 
+            self.window.poll_events(|event| match event {
+                Event::KeyPress(Key::Escape) => self.running = false,
+                Event::KeyPress(key) => self.input.handle_key_press(key),
+                Event::KeyRelease(key) => self.input.handle_key_release(key),
+                _ => (),
+            });
+
             let real_time = self.window.current_time();
 
             while current_time < real_time {
@@ -63,16 +70,11 @@ impl MainLoop {
 
                 let (mouse_x, mouse_y) = self.window.mouse_pos();
                 self.input.handle_mouse(mouse_x as i32, mouse_y as i32);
-                self.player.update(dt, current_time);
+                self.player.update(&self.input, &mut self.camera, dt, current_time);
                 self.camera.set_position(self.player.eye_position());
                 self.camera.update(&self.input, dt, current_time);
                 self.renderer.update(dt, current_time);
             }
-
-            self.window.poll_events(|event| match event {
-                Event::KeyPress(Key::Escape) => self.running = false,
-                _ => (),
-            });
 
             if self.window.should_close() {
                 break;
