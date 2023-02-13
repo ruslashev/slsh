@@ -27,6 +27,11 @@ pub enum Event {
 #[repr(i32)]
 pub enum Key {
     Escape = glfw::Key::Escape as i32,
+    Space = glfw::Key::Space as i32,
+    W = glfw::Key::W as i32,
+    A = glfw::Key::A as i32,
+    S = glfw::Key::S as i32,
+    D = glfw::Key::D as i32,
     Unknown = glfw::Key::Unknown as i32,
 }
 
@@ -163,6 +168,11 @@ impl Key {
     fn from_glfw(key: glfw::Key) -> Self {
         match key {
             glfw::Key::Escape => Key::Escape,
+            glfw::Key::Space => Key::Space,
+            glfw::Key::W => Key::W,
+            glfw::Key::A => Key::A,
+            glfw::Key::S => Key::S,
+            glfw::Key::D => Key::D,
             _ => Key::Unknown,
         }
     }

@@ -1,9 +1,14 @@
+use crate::window::Key;
+
 pub struct InputHandler {
     mouse_prev_x: i32,
     mouse_prev_y: i32,
 
     pub mouse_diff_x: i32,
     pub mouse_diff_y: i32,
+
+    pub forward: i8,
+    pub right: i8,
 }
 
 impl InputHandler {
@@ -13,6 +18,8 @@ impl InputHandler {
             mouse_prev_y,
             mouse_diff_x: 0,
             mouse_diff_y: 0,
+            forward: 0,
+            right: 0,
         }
     }
 
@@ -22,5 +29,41 @@ impl InputHandler {
 
         self.mouse_prev_x = x;
         self.mouse_prev_y = y;
+    }
+
+    pub fn handle_key_press(&mut self, key: Key) {
+        match key {
+            Key::W => self.forward = 1,
+            Key::S => self.forward = -1,
+            Key::D => self.right = 1,
+            Key::A => self.right = -1,
+            _ => (),
+        }
+    }
+
+    pub fn handle_key_release(&mut self, key: Key) {
+        match key {
+            Key::W => {
+                if self.forward == 1 {
+                    self.forward = 0;
+                }
+            }
+            Key::S => {
+                if self.forward == -1 {
+                    self.forward = 0;
+                }
+            }
+            Key::D => {
+                if self.right == 1 {
+                    self.right = 0;
+                }
+            }
+            Key::A => {
+                if self.right == -1 {
+                    self.right = 0;
+                }
+            }
+            _ => (),
+        }
     }
 }
