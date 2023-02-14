@@ -9,6 +9,7 @@ pub struct InputHandler {
 
     pub forward: i8,
     pub right: i8,
+    pub up: i8,
 }
 
 impl InputHandler {
@@ -20,6 +21,7 @@ impl InputHandler {
             mouse_diff_y: 0,
             forward: 0,
             right: 0,
+            up: 0,
         }
     }
 
@@ -37,6 +39,7 @@ impl InputHandler {
             Key::S => self.forward = -1,
             Key::D => self.right = 1,
             Key::A => self.right = -1,
+            Key::Space => self.up = 1,
             _ => (),
         }
     }
@@ -63,6 +66,7 @@ impl InputHandler {
                     self.right = 0;
                 }
             }
+            Key::Space => self.up = 0,
             _ => (),
         }
     }

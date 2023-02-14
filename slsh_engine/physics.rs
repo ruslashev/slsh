@@ -5,14 +5,16 @@ use crate::input::InputHandler;
 
 const SPEED: f32 = 16.0;
 const ACCELERATE: f32 = 6.0;
+const AIR_ACCELERATE: f32 = 1.0;
 const SPEED_MIN: f32 = 0.01;
 const STOP_SPEED: f32 = 100.0;
 const FRICTION: f32 = 6.0;
+const JUMP_VEL: f32 = 600.0;
+const GRAVITY: f32 = -30.0;
 
 pub struct Entity {
     position: Vec3,
     velocity: Vec3,
-    acceleration: Vec3,
     rotation: Vec3,
     mass: f32,
     eye_height: f32,
@@ -25,7 +27,6 @@ impl Entity {
             position: Vec3::new(pos_x, pos_y, pos_z),
             velocity: Vec3::new(0.0, 0.0, 0.0),
             rotation: Vec3::new(0.0, 0.0, 0.0),
-            acceleration: Vec3::new(0.0, 0.0, 0.0),
             mass: 1.0,
             eye_height: 3.0,
             on_ground: false,
@@ -39,7 +40,6 @@ impl Entity {
 
         self.movement(input, dt);
 
-        self.velocity += self.acceleration * dt;
         self.position += self.velocity * dt;
 
         self.detect_collisions();
@@ -74,11 +74,17 @@ impl Entity {
         }
 
         self.on_ground = true;
+        self.velocity.y = 0.0;
         self.position.y = 0.0;
     }
 
     fn movement_ground(&mut self, input: &InputHandler, dt: f32) {
-        self.acceleration = Vec3::new(0.0, 0.0, 0.0);
+        if input.up == 1 {
+            self.on_ground = false;
+            self.velocity.y += JUMP_VEL * dt;
+            self.movement_air(input, dt);
+            return;
+        }
 
         self.apply_friction(dt);
 
@@ -101,10 +107,26 @@ impl Entity {
         self.accelerate(wish_dir, SPEED, ACCELERATE, dt);
     }
 
-    fn movement_air(&mut self, _input: &InputHandler, _dt: f32) {
-        let gravity = Vec3::new(0.0, -9.8, 0.0);
+    fn movement_air(&mut self, input: &InputHandler, dt: f32) {
+        self.apply_friction(dt);
 
-        self.acceleration = gravity / self.mass;
+        let forward_factor = input.forward as f32;
+        let right_factor = input.right as f32;
+
+        let mut forward = self.rotation;
+        let up = Vec3::new(0.0, 1.0, 0.0);
+        let mut right = -forward.cross(up).normalize();
+
+        forward.y = 0.0;
+        right.y = 0.0;
+
+        let wish_dir = (forward * forward_factor + right * right_factor).normalize_or_zero();
+
+        self.accelerate(wish_dir, SPEED, AIR_ACCELERATE, dt);
+
+        let gravity = Vec3::new(0.0, GRAVITY, 0.0);
+
+        self.velocity += gravity / self.mass * dt;
     }
 
     fn accelerate(&mut self, wish_dir: Vec3, wish_speed: f32, accel: f32, dt: f32) {
