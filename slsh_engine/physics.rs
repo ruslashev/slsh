@@ -51,6 +51,10 @@ impl Entity {
         eye
     }
 
+    pub fn speed(&self) -> f32 {
+        self.velocity.length()
+    }
+
     fn copy_orientation(&mut self, camera: &mut Camera) {
         let view = Mat3::from_rotation_y(-camera.yaw());
         let rot_x = view.x_axis[2];

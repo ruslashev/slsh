@@ -80,8 +80,6 @@ impl MainLoop {
                 break;
             }
 
-            let draw_start = self.window.current_time();
-
             self.renderer.update_data(&mut self.ui, &mut self.camera);
             self.renderer.present();
 
@@ -90,13 +88,11 @@ impl MainLoop {
             if frame_end > next_title_update_time {
                 next_title_update_time = frame_end + title_update_delay;
 
-                let draw_time = frame_end - draw_start;
                 let frame_time = frame_end - real_time;
 
-                let draw_ms = draw_time * 1000.0;
                 let fps = 1.0 / frame_time;
 
-                let title = format!("slsh | draw = {:05.2} ms, FPS = {:04.0}", draw_ms, fps);
+                let title = format!("slsh | speed = {:03.1} FPS = {:04.0}", self.player.speed(), fps);
 
                 self.window.set_title(&title);
             }
