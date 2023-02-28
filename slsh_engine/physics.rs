@@ -3,6 +3,8 @@ use glam::{Mat3, Vec3};
 use crate::camera::Camera;
 use crate::input::InputHandler;
 
+const UP: Vec3 = Vec3::new(0.0, 1.0, 0.0);
+
 const SPEED: f32 = 16.0;
 const ACCELERATE: f32 = 6.0;
 const AIR_ACCELERATE: f32 = 1.0;
@@ -64,6 +66,8 @@ impl Entity {
     }
 
     fn movement(&mut self, input: &InputHandler, dt: f32) {
+        self.apply_friction(dt);
+
         if self.on_ground {
             self.movement_ground(input, dt);
         } else {
@@ -90,58 +94,47 @@ impl Entity {
             return;
         }
 
-        self.apply_friction(dt);
-
         if input.forward == 0 && input.right == 0 {
             return;
         }
 
-        let forward_factor = input.forward as f32;
-        let right_factor = input.right as f32;
-
-        let mut forward = self.rotation;
-        let up = Vec3::new(0.0, 1.0, 0.0);
-        let mut right = -forward.cross(up).normalize();
-
-        forward.y = 0.0;
-        right.y = 0.0;
-
-        let wish_dir = (forward * forward_factor + right * right_factor).normalize_or_zero();
-
-        self.accelerate(wish_dir, SPEED, ACCELERATE, dt);
+        self.accel_common(input, ACCELERATE, dt);
     }
 
     fn movement_air(&mut self, input: &InputHandler, dt: f32) {
-        self.apply_friction(dt);
-
-        let forward_factor = input.forward as f32;
-        let right_factor = input.right as f32;
-
-        let mut forward = self.rotation;
-        let up = Vec3::new(0.0, 1.0, 0.0);
-        let mut right = -forward.cross(up).normalize();
-
-        forward.y = 0.0;
-        right.y = 0.0;
-
-        let wish_dir = (forward * forward_factor + right * right_factor).normalize_or_zero();
-
-        self.accelerate(wish_dir, SPEED, AIR_ACCELERATE, dt);
+        self.accel_common(input, AIR_ACCELERATE, dt);
 
         let gravity = Vec3::new(0.0, GRAVITY, 0.0);
 
         self.velocity += gravity / self.mass * dt;
     }
 
+    fn accel_common(&mut self, input: &InputHandler, accel: f32, dt: f32) {
+        let mut forward = self.rotation;
+        let mut right = -forward.cross(UP).normalize();
+
+        forward.y = 0.0;
+        right.y = 0.0;
+
+        let forward_input = input.forward as f32;
+        let right_input = input.right as f32;
+
+        let wish_dir = (forward * forward_input + right * right_input).normalize_or_zero();
+
+        self.accelerate(wish_dir, SPEED, accel, dt);
+    }
+
     fn accelerate(&mut self, wish_dir: Vec3, wish_speed: f32, accel: f32, dt: f32) {
         let current_speed = self.velocity.dot(wish_dir);
 
         let add_speed = wish_speed - current_speed;
+
         if add_speed <= 0.0 {
             return;
         }
 
         let mut accel_speed = accel * wish_speed * dt;
+
         if accel_speed > add_speed {
             accel_speed = add_speed;
         }
