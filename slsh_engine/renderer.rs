@@ -25,10 +25,10 @@ const REQ_DEVICE_EXTENSIONS: &[&str] = &[
     "VK_KHR_portability_subset",
 ];
 const REQ_VALIDATION_LAYERS: &[&str] = &[
-    "VK_LAYER_MESA_device_select",
-    "VK_LAYER_LUNARG_monitor",
-    "VK_LAYER_KHRONOS_synchronization2",
-    "VK_LAYER_KHRONOS_validation",
+    // "VK_LAYER_MESA_device_select",
+    // "VK_LAYER_LUNARG_monitor",
+    // "VK_LAYER_KHRONOS_synchronization2",
+    // "VK_LAYER_KHRONOS_validation",
 ];
 const API_VER_MAJOR: u32 = 1;
 const API_VER_MINOR: u32 = 0;
@@ -215,7 +215,7 @@ impl Renderer {
         let grid_vert_shader_compiled = include_shader!("grid.vert");
         let grid_frag_shader_compiled = include_shader!("grid.frag");
 
-        let grid = create_grid_mesh(2.0, 32).into_mesh_data(
+        let grid = create_grid_mesh(50.0, 1024).into_mesh_data(
             device.clone(),
             &device_mem_properties,
             command_pool,

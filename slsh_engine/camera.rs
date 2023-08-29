@@ -32,7 +32,7 @@ impl Camera {
         Self {
             fov: 70.0_f32.to_radians(),
             near: 0.05,
-            far: 100.0,
+            far: 5000.0,
             pitch: 0.0,
             yaw: 0.0,
             roll: 0.0,

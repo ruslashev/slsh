@@ -5,14 +5,19 @@ use crate::input::InputHandler;
 
 const UP: Vec3 = Vec3::new(0.0, 1.0, 0.0);
 
-const SPEED: f32 = 16.0;
-const ACCELERATE: f32 = 6.0;
-const AIR_ACCELERATE: f32 = 1.0;
+const HEIGHT: f32 = 75.0;
+
+const SPEED: f32 = 400.0;
+const ACCELERATE: f32 = 10.0;
+const AIR_ACCELERATE: f32 = 10.0;
+const AIR_SPEED_CAP: f32 = 30.0;
 const SPEED_MIN: f32 = 0.01;
+const SPEED_MAX: f32 = 320.0;
 const STOP_SPEED: f32 = 100.0;
-const FRICTION: f32 = 6.0;
-const JUMP_VEL: f32 = 600.0;
-const GRAVITY: f32 = -30.0;
+const FRICTION: f32 = 8.0;
+const JUMP_VEL: f32 = 15000.0;
+const GRAVITY: f32 = 750.0;
+const JUMP_HEIGHT: f32 = 21.0;
 
 pub struct Entity {
     position: Vec3,
@@ -30,7 +35,7 @@ impl Entity {
             velocity: Vec3::new(0.0, 0.0, 0.0),
             rotation: Vec3::new(0.0, 0.0, 0.0),
             mass: 1.0,
-            eye_height: 3.0,
+            eye_height: HEIGHT,
             on_ground: false,
         }
     }
@@ -98,30 +103,55 @@ impl Entity {
             return;
         }
 
-        self.accel_common(input, ACCELERATE, dt);
+        self.accel_common(input, false, dt);
     }
 
     fn movement_air(&mut self, input: &InputHandler, dt: f32) {
-        self.accel_common(input, AIR_ACCELERATE, dt);
+        self.accel_common(input, true, dt);
 
-        let gravity = Vec3::new(0.0, GRAVITY, 0.0);
+        let gravity = Vec3::new(0.0, -GRAVITY, 0.0);
 
         self.velocity += gravity / self.mass * dt;
     }
 
-    fn accel_common(&mut self, input: &InputHandler, accel: f32, dt: f32) {
+    fn accel_common(&mut self, input: &InputHandler, air: bool, dt: f32) {
         let mut forward = self.rotation;
         let mut right = -forward.cross(UP).normalize();
 
         forward.y = 0.0;
         right.y = 0.0;
 
-        let forward_input = input.forward as f32;
-        let right_input = input.right as f32;
+        forward = forward.normalize();
+        right = right.normalize();
 
-        let wish_dir = (forward * forward_input + right * right_input).normalize_or_zero();
+        let forward_move = input.forward as f32 * SPEED;
+        let right_move = input.right as f32 * SPEED;
 
-        self.accelerate(wish_dir, SPEED, accel, dt);
+        let mut wish_vel = forward * forward_move + right * right_move;
+        wish_vel.y = 0.0;
+
+        let mut wish_dir = wish_vel;
+
+        let mut wish_speed = wish_vel.length();
+
+        if wish_speed < SPEED_MIN {
+            // Not an issue for quake/source, but here glam's normalize() rightfully panics
+            return;
+        }
+
+        if air && wish_speed > SPEED_MAX {
+            wish_speed = SPEED_MAX;
+        }
+
+        wish_dir = wish_dir.normalize(); // unnecessary sqrt
+
+        let accel = if air {
+            AIR_ACCELERATE
+        } else {
+            ACCELERATE
+        };
+
+        self.accelerate(wish_dir, wish_speed, accel, dt);
     }
 
     fn accelerate(&mut self, wish_dir: Vec3, wish_speed: f32, accel: f32, dt: f32) {
@@ -133,6 +163,27 @@ impl Entity {
             return;
         }
 
+        let mut accel_speed = accel * wish_speed * dt;
+
+        if accel_speed > add_speed {
+            accel_speed = add_speed;
+        }
+
+        self.velocity += wish_dir * accel_speed;
+    }
+
+    fn air_accelerate(&mut self, wish_dir: Vec3, wish_speed: f32, accel: f32, dt: f32) {
+        let current_speed = self.velocity.dot(wish_dir);
+
+        let wish_speed_capped = wish_speed.min(AIR_SPEED_CAP);
+
+        let add_speed = wish_speed_capped - current_speed;
+
+        if add_speed <= 0.0 {
+            return;
+        }
+
+        // Not using wish_speed_capped here, as is in source engine
         let mut accel_speed = accel * wish_speed * dt;
 
         if accel_speed > add_speed {
